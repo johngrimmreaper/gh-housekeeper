@@ -1,0 +1,10 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/gh-housekeeper-core",
+    "crates/gh-housekeeper-github",
+    "crates/gh-housekeeper-policy",
+    "crates/gh-housekeeper-storage",
+    "crates/gh-housekeeper-cli",
+    "crates/gh-housekeeper-gui",
+]
