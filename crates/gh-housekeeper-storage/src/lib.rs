@@ -43,9 +43,7 @@ impl StatePaths {
                 .map(PathBuf::from)
                 .ok_or(StatePathError::HomeDirectoryUnavailable)?;
             return Ok(Self {
-                config_dir: home
-                    .join("Library/Application Support")
-                    .join(APP_DIR),
+                config_dir: home.join("Library/Application Support").join(APP_DIR),
                 cache_dir: home.join("Library/Caches").join(APP_DIR),
                 state_dir: home
                     .join("Library/Application Support")

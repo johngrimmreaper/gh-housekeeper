@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    format_bytes, matches_glob, parse_duration, Artifact, ArtifactProvider, InventoryService,
-    ScanOptions, ScanScope, StorageBucket,
+    Artifact, ArtifactProvider, InventoryService, ScanOptions, ScanScope, StorageBucket,
+    format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use serde_json::json;
@@ -124,7 +124,10 @@ struct ArtifactsCommand {
     #[arg(long, help = "Artifact name glob, for example 'output-*'")]
     name: Option<String>,
 
-    #[arg(long, help = "Only artifacts at least this old, for example 30d or 12h")]
+    #[arg(
+        long,
+        help = "Only artifacts at least this old, for example 30d or 12h"
+    )]
     older_than: Option<String>,
 }
 
@@ -192,7 +195,10 @@ async fn run_scan(provider: Arc<dyn ArtifactProvider>, command: ScanCommand) -> 
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "unknown".to_owned())
             );
-            println!("Elapsed:          {:.2}s", snapshot.elapsed_ms as f64 / 1000.0);
+            println!(
+                "Elapsed:          {:.2}s",
+                snapshot.elapsed_ms as f64 / 1000.0
+            );
             if !snapshot.issues.is_empty() {
                 println!("Scan issues:      {}", snapshot.issues.len());
             }
@@ -229,7 +235,10 @@ async fn run_repos(provider: Arc<dyn ArtifactProvider>, command: ReposCommand) -
         OutputFormat::Table => {
             println!("Account: {}", account.login);
             println!();
-            println!("{:<48} {:<10} {:<18} FLAGS", "REPOSITORY", "VISIBILITY", "DEFAULT BRANCH");
+            println!(
+                "{:<48} {:<10} {:<18} FLAGS",
+                "REPOSITORY", "VISIBILITY", "DEFAULT BRANCH"
+            );
             for repository in repositories {
                 let mut flags = Vec::new();
                 if repository.archived {
