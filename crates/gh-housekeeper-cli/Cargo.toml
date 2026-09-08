@@ -1,8 +1,19 @@
 [package]
 name = "gh-housekeeper-cli"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "gh-housekeeper"
+path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+gh-housekeeper-core = { path = "../gh-housekeeper-core" }
+gh-housekeeper-github = { path = "../gh-housekeeper-github" }
+serde_json.workspace = true
+tokio.workspace = true
