@@ -4,12 +4,11 @@ use gh_housekeeper_core::{
     Account, Artifact, ArtifactProvider, DeleteOutcome, ProviderError, ProviderResult,
     ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility, WorkflowRunRef,
 };
-use reqwest::{header::HeaderMap, Method, Response, StatusCode};
-use serde::de::DeserializeOwned;
+use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use std::{
-    env,
-    fmt,
+    env, fmt,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -174,7 +173,7 @@ impl GithubClient {
             if status == StatusCode::NOT_FOUND {
                 return Err(ProviderError::NotFound(message));
             }
-            if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
+            if is_rate_limited(status, &headers, &message) {
                 let retry_after_seconds = rate_limit_delay(&headers, attempt);
                 if method == Method::GET && attempt + 1 < max_attempts {
                     if let Some(delay) = retry_after_seconds.filter(|delay| *delay <= 60) {
@@ -347,6 +346,14 @@ fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
 }
 
+fn is_rate_limited(status: StatusCode, headers: &HeaderMap, message: &str) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || header_u64(headers, "x-ratelimit-remaining") == Some(0)
+        || headers.contains_key("retry-after")
+        || (status == StatusCode::FORBIDDEN
+            && message.to_ascii_lowercase().contains("rate limit"))
+}
+
 fn rate_limit_delay(headers: &HeaderMap, attempt: usize) -> Option<u64> {
     if let Some(delay) = header_u64(headers, "retry-after") {
         return Some(delay);
@@ -354,10 +361,7 @@ fn rate_limit_delay(headers: &HeaderMap, attempt: usize) -> Option<u64> {
 
     if header_u64(headers, "x-ratelimit-remaining") == Some(0) {
         let reset = header_u64(headers, "x-ratelimit-reset")?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()?
-            .as_secs();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         return Some(reset.saturating_sub(now).max(1));
     }
 
@@ -498,7 +502,28 @@ mod tests {
 
     #[test]
     fn extracts_github_error_message_without_echoing_arbitrary_json() {
-        let message = github_error_message(r#"{"message":"rate limit exceeded","extra":"ignored"}"#);
+        let message =
+            github_error_message(r#"{"message":"rate limit exceeded","extra":"ignored"}"#);
         assert_eq!(message, "rate limit exceeded");
+    }
+
+    #[test]
+    fn distinguishes_plain_forbidden_from_rate_limit_responses() {
+        let headers = HeaderMap::new();
+        assert!(!is_rate_limited(
+            StatusCode::FORBIDDEN,
+            &headers,
+            "Resource not accessible by integration"
+        ));
+        assert!(is_rate_limited(
+            StatusCode::FORBIDDEN,
+            &headers,
+            "You have exceeded a secondary rate limit"
+        ));
+        assert!(is_rate_limited(
+            StatusCode::TOO_MANY_REQUESTS,
+            &headers,
+            ""
+        ));
     }
 }

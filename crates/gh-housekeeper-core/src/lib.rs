@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use globset::Glob;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
@@ -140,7 +140,10 @@ pub struct InventorySnapshot {
 
 impl InventorySnapshot {
     pub fn total_bytes(&self) -> u64 {
-        self.artifacts.iter().map(|artifact| artifact.size_in_bytes).sum()
+        self.artifacts
+            .iter()
+            .map(|artifact| artifact.size_in_bytes)
+            .sum()
     }
 
     pub fn artifact_count(&self) -> usize {
@@ -148,7 +151,9 @@ impl InventorySnapshot {
     }
 
     pub fn aggregate_by_repository(&self) -> Vec<StorageBucket> {
-        aggregate(&self.artifacts, |artifact| artifact.repository.full_name.clone())
+        aggregate(&self.artifacts, |artifact| {
+            artifact.repository.full_name.clone()
+        })
     }
 
     pub fn aggregate_by_name(&self) -> Vec<StorageBucket> {
@@ -406,9 +411,15 @@ mod tests {
 
     #[test]
     fn parses_housekeeping_durations() {
-        assert_eq!(parse_duration("30d").unwrap(), Duration::from_secs(2_592_000));
+        assert_eq!(
+            parse_duration("30d").unwrap(),
+            Duration::from_secs(2_592_000)
+        );
         assert_eq!(parse_duration("12h").unwrap(), Duration::from_secs(43_200));
-        assert_eq!(parse_duration("2w").unwrap(), Duration::from_secs(1_209_600));
+        assert_eq!(
+            parse_duration("2w").unwrap(),
+            Duration::from_secs(1_209_600)
+        );
         assert_eq!(parse_duration("0d"), Err(DurationParseError::Invalid));
         assert_eq!(parse_duration("days"), Err(DurationParseError::Invalid));
     }
