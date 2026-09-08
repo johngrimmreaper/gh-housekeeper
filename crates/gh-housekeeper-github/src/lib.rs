@@ -350,8 +350,7 @@ fn is_rate_limited(status: StatusCode, headers: &HeaderMap, message: &str) -> bo
     status == StatusCode::TOO_MANY_REQUESTS
         || header_u64(headers, "x-ratelimit-remaining") == Some(0)
         || headers.contains_key("retry-after")
-        || (status == StatusCode::FORBIDDEN
-            && message.to_ascii_lowercase().contains("rate limit"))
+        || (status == StatusCode::FORBIDDEN && message.to_ascii_lowercase().contains("rate limit"))
 }
 
 fn rate_limit_delay(headers: &HeaderMap, attempt: usize) -> Option<u64> {
@@ -520,10 +519,6 @@ mod tests {
             &headers,
             "You have exceeded a secondary rate limit"
         ));
-        assert!(is_rate_limited(
-            StatusCode::TOO_MANY_REQUESTS,
-            &headers,
-            ""
-        ));
+        assert!(is_rate_limited(StatusCode::TOO_MANY_REQUESTS, &headers, ""));
     }
 }
