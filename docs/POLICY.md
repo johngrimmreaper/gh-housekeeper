@@ -6,60 +6,84 @@ Policy is declarative, repository-agnostic, deterministic, and explainable.
 
 Artifact names have no intrinsic meaning. A string that resembles a build output, test report, handoff, commit SHA, run number, or release asset is not treated specially unless a user rule or verified metadata says so.
 
+## Implemented policy slice
+
+The policy crate accepts TOML and currently supports:
+
+- default retention through `defaults.keep_days`;
+- repository, workflow, artifact-name, and branch glob selectors;
+- per-rule `keep_days`;
+- explicit `protect = true`;
+- `keep_latest` over the complete set of artifacts matched by that rule;
+- structured `Keep`, `Delete`, `Protected`, and `ManualReview` decisions;
+- structured reason codes, rule IDs, and human-readable explanations;
+- deterministic specificity: a rule with more selectors outranks a less-specific retention rule;
+- safe conflict handling: equally specific matching retention rules with different `keep_days` values become `ManualReview`.
+
+Example:
+
+```toml
+[defaults]
+keep_days = 30
+
+[[rules]]
+id = "short-lived-nightlies"
+repository = "example-user/*"
+artifact = "nightly-*"
+keep_days = 7
+keep_latest = 5
+
+[[rules]]
+id = "protect-release-artifacts"
+repository = "example-user/project-alpha"
+artifact = "release-*"
+protect = true
+```
+
+`keep_latest` does not guess artifact families. Its grouping scope is exactly the match set selected by the rule. Add repository, workflow, artifact, and/or branch selectors to make that set as narrow as required.
+
+Workflow-name rules only match inventory records that actually contain workflow-name metadata. Expensive metadata enrichment remains a later application layer and is not silently inferred by the policy engine.
+
 ## Ordinary default
 
-The initial gh-housekeeper product default is:
+The initial gh-housekeeper product default remains:
 
 ```toml
 [defaults]
 keep_days = 30
 ```
 
-Thirty days is a product default for ordinary CI artifacts, not a GitHub rule. Users will be able to override it globally and with more-specific rules.
-
-Open pull requests do not receive indefinite protection by default. PR state is a policy dimension that users may use to protect, retain, shorten, or otherwise classify artifacts.
-
-## Planned declarative rule dimensions
-
-The TOML policy language is being implemented to support generic dimensions such as:
-
-- repository glob;
-- workflow glob;
-- artifact-name glob or regex;
-- branch glob;
-- event;
-- pull-request state;
-- workflow conclusion;
-- minimum/maximum age;
-- minimum/maximum size;
-- explicit protection;
-- release/tag protection;
-- `keep_latest` with an explicit grouping scope;
-- deleted-branch rules;
-- PR grace periods;
-- repository storage limits.
+Thirty days is a product default for ordinary CI artifacts, not a GitHub rule.
 
 ## Decisions
 
-Policy output will use structured decisions:
+Policy output uses structured decisions:
 
 - `Keep`
 - `Delete`
 - `Protected`
 - `ManualReview`
 
-Every decision will include structured reason code(s), human-readable explanation(s), and applicable rule identifier(s).
-
-Free-form explanation text is not the policy data model.
+Every decision includes structured reason code(s), human-readable explanation(s), and applicable rule identifier(s). Free-form explanation text is not the policy data model.
 
 ## Precedence
 
-Safety-oriented explicit protection should outrank destructive rules. More-specific keep/delete rules should outrank ordinary defaults only when their relationship is deterministic.
+Explicit protection outranks destructive retention rules. `keep_latest` then protects the selected newest artifacts from ordinary retention deletion. For `keep_days`, the matching rule with the greatest number of selectors wins.
 
-If genuinely conflicting applicable rules cannot be safely ordered, the engine should emit `ManualReview` and explain the conflict instead of silently choosing deletion.
+If multiple equally specific applicable retention rules request different values, the engine emits `ManualReview` instead of choosing a destructive result.
 
-## Artifact grouping
+## Planned dimensions
 
-Explicit grouping patterns are user policy. Automatic family inference, when introduced, must be conservative and explainable. gh-housekeeper must not blindly normalize hexadecimal suffixes, numeric suffixes, or other name fragments into a family.
+Later policy slices may add generic dimensions such as:
 
-`keep_latest` will operate on a clearly identified grouping key, such as repository/workflow/branch/artifact group, rather than hidden naming assumptions.
+- event;
+- pull-request state;
+- workflow conclusion;
+- minimum/maximum age;
+- minimum/maximum size;
+- release/tag protection;
+- deleted-branch rules;
+- PR grace periods;
+- repository storage limits and storage-pressure cleanup.
+
+These require either additional metadata or cleanup-planner context and should not be guessed from artifact names.
