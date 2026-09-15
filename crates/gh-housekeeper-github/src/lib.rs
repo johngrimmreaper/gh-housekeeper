@@ -146,7 +146,7 @@ impl GithubClient {
 
             let response = match response {
                 Ok(response) => response,
-                Err(error) if method == Method::GET && attempt + 1 < max_attempts => {
+                Err(_) if method == Method::GET && attempt + 1 < max_attempts => {
                     sleep(Duration::from_secs(1_u64 << attempt)).await;
                     continue;
                 }
