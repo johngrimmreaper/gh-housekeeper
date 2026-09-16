@@ -1,11 +1,16 @@
 mod audit;
 mod config;
+mod monitoring_history;
 
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
 };
 pub use config::{
     AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
+};
+pub use monitoring_history::{
+    MONITORING_SAMPLE_SCHEMA_VERSION, MonitoringHistory, MonitoringHistoryError,
+    MonitoringHistoryStore, MonitoringReadIssue, MonitoringSample,
 };
 
 use std::{env, path::PathBuf};
