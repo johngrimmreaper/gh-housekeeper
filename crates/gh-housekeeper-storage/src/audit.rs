@@ -253,8 +253,8 @@ mod tests {
     }
 
     fn execution_report(start_second: u32, states: &[ExecutionState]) -> ExecutionReport {
-        let started_at = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, start_second)
-            .unwrap();
+        let started_at =
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, start_second).unwrap();
         let completed_at = started_at + chrono::Duration::seconds(1);
         let items = states
             .iter()
@@ -281,14 +281,8 @@ mod tests {
                 provider: "github".to_owned(),
                 login: "example-user".to_owned(),
             },
-            plan_created_at: chrono::TimeZone::with_ymd_and_hms(
-                &Utc, 2026, 2, 1, 0, 0, 0,
-            )
-            .unwrap(),
-            plan_scanned_at: chrono::TimeZone::with_ymd_and_hms(
-                &Utc, 2026, 2, 1, 0, 0, 0,
-            )
-            .unwrap(),
+            plan_created_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, 0).unwrap(),
+            plan_scanned_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, 0).unwrap(),
             policy_hash: "fnv1a64:0123456789abcdef".to_owned(),
             authorization: ExecutionAuthorizationKind::InteractiveConfirmation,
             telemetry: ProviderTelemetry {
@@ -368,8 +362,11 @@ mod tests {
         let report = execution_report(1, &[ExecutionState::Deleted]);
 
         store.append(&report).unwrap();
-        fs::write(store.directory().join("99999999999999999999-corrupt.json"), b"{")
-            .unwrap();
+        fs::write(
+            store.directory().join("99999999999999999999-corrupt.json"),
+            b"{",
+        )
+        .unwrap();
 
         let history = store.read_all().unwrap();
         assert_eq!(history.records.len(), 1);
