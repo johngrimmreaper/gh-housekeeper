@@ -55,7 +55,27 @@ pub trait CacheProvider: RepositoryProvider {
         &self,
         repository: &RepositoryRef,
         cache_id: u64,
-    ) -> ProviderResult<Option<ActionsCache>>;
+    ) -> ProviderResult<Option<ActionsCache>> {
+        let repositories = RepositoryProvider::repositories(
+            self,
+            &ScanScope::Repository(repository.full_name.clone()),
+        )
+        .await?;
+        let Some(repository) = repositories.into_iter().find(|candidate| {
+            candidate.id == repository.id
+                || candidate
+                    .full_name
+                    .eq_ignore_ascii_case(&repository.full_name)
+        }) else {
+            return Ok(None);
+        };
+
+        Ok(self
+            .caches(&repository)
+            .await?
+            .into_iter()
+            .find(|cache| cache.id == cache_id))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
