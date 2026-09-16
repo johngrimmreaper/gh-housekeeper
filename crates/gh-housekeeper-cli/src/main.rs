@@ -304,7 +304,6 @@ struct MonitorOnceCommand {
     format: OutputFormat,
 }
 
-
 #[derive(Args)]
 struct MonitorWatchCommand {
     #[command(flatten)]
@@ -534,7 +533,6 @@ async fn run_monitor_once(
     Ok(())
 }
 
-
 async fn run_monitor_watch(
     provider: Arc<dyn ArtifactProvider>,
     command: MonitorWatchCommand,
@@ -586,7 +584,10 @@ async fn run_monitor_watch(
 
     if matches!(command.format, OutputFormat::Table) {
         println!("Foreground monitoring");
-        println!("Scope:                {}", format_scope(&command.scope.scope()));
+        println!(
+            "Scope:                {}",
+            format_scope(&command.scope.scope())
+        );
         println!("Interval:             {}s", interval.as_secs());
         println!(
             "Attempt limit:        {}",
@@ -594,7 +595,12 @@ async fn run_monitor_watch(
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none (Ctrl-C to stop)".to_owned())
         );
-        println!("Persistence:          {}", MonitoringHistoryStore::from_paths(&paths).directory().display());
+        println!(
+            "Persistence:          {}",
+            MonitoringHistoryStore::from_paths(&paths)
+                .directory()
+                .display()
+        );
         println!();
     }
 
@@ -612,10 +618,7 @@ async fn run_monitor_watch(
 
 fn print_monitoring_scheduler_event(
     format: OutputFormat,
-    event: MonitoringSchedulerEvent<
-        PathBuf,
-        gh_housekeeper_storage::MonitoringHistoryError,
-    >,
+    event: MonitoringSchedulerEvent<PathBuf, gh_housekeeper_storage::MonitoringHistoryError>,
 ) {
     match (format, event) {
         (
@@ -1762,7 +1765,6 @@ mod tests {
         }
         assert_eq!(values, vec![1, 2, 3]);
     }
-
 
     #[test]
     fn transition_labels_are_stable_for_foreground_output() {
