@@ -571,19 +571,17 @@ async fn run_monitor_watch(
     let baseline_lookup = store
         .latest_compatible(&account, &scan_options)
         .context("failed to load compatible monitoring baseline")?;
-    let baseline_recorded_at = baseline_lookup.sample.as_ref().map(|sample| sample.recorded_at);
+    let baseline_recorded_at = baseline_lookup
+        .sample
+        .as_ref()
+        .map(|sample| sample.recorded_at);
     let baseline_report = baseline_lookup.sample.map(|sample| sample.report);
     print_monitoring_read_issues(&baseline_lookup.issues);
 
     let runner = MonitoringRunner::new(MonitoringService::new(Arc::clone(&provider)), store);
-    let mut scheduler = MonitoringScheduler::new(
-        runner,
-        scan_options,
-        thresholds,
-        interval,
-        interval,
-    )
-    .context("invalid monitoring scheduler configuration")?;
+    let mut scheduler =
+        MonitoringScheduler::new(runner, scan_options, thresholds, interval, interval)
+            .context("invalid monitoring scheduler configuration")?;
     if let Some(baseline) = baseline_report {
         scheduler = scheduler
             .with_baseline(baseline)
