@@ -303,7 +303,7 @@ mod tests {
 
     #[derive(Clone)]
     enum FakeLookup {
-        Present(Artifact),
+        Present(Box<Artifact>),
         Absent,
         NotFound,
         TransportError,
@@ -377,7 +377,7 @@ mod tests {
             self.lookup_calls.fetch_add(1, Ordering::SeqCst);
             let key = key(repository, artifact_id);
             match self.lookups.get(&key) {
-                Some(FakeLookup::Present(artifact)) => Ok(Some(artifact.clone())),
+                Some(FakeLookup::Present(artifact)) => Ok(Some((**artifact).clone())),
                 Some(FakeLookup::Absent) | None => Ok(None),
                 Some(FakeLookup::NotFound) => {
                     Err(ProviderError::NotFound("artifact not found".to_owned()))
@@ -560,7 +560,7 @@ mod tests {
             account("example-user"),
             lookup_map(vec![(
                 planned.clone(),
-                FakeLookup::Present(planned.clone()),
+                FakeLookup::Present(Box::new(planned.clone())),
             )]),
             delete_map(vec![(planned.clone(), FakeDelete::Deleted)]),
         ));
@@ -620,6 +620,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn lookup_not_found_is_treated_as_already_absent_without_delete() {
+        let planned = artifact(1, "example-user/project-alpha");
+        let plan = plan(vec![planned.clone()]);
+        let review = reviewed(&plan, vec![RevalidationState::Unchanged]);
+        let provider = Arc::new(FakeProvider::new(
+            account("example-user"),
+            lookup_map(vec![(planned, FakeLookup::NotFound)]),
+            BTreeMap::new(),
+        ));
+
+        let report = ExecutionService::new(provider.clone())
+            .execute(
+                &plan,
+                &review,
+                ExecutionAuthorization::interactive_confirmation(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.count(ExecutionState::AlreadyAbsent), 1);
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+        assert!(report.is_complete_success());
+    }
+
+    #[tokio::test]
     async fn changed_target_is_never_deleted() {
         let planned = artifact(1, "example-user/project-alpha");
         let mut current = planned.clone();
@@ -628,7 +653,7 @@ mod tests {
         let review = reviewed(&plan, vec![RevalidationState::Unchanged]);
         let provider = Arc::new(FakeProvider::new(
             account("example-user"),
-            lookup_map(vec![(planned, FakeLookup::Present(current))]),
+            lookup_map(vec![(planned, FakeLookup::Present(Box::new(current)))]),
             BTreeMap::new(),
         ));
 
@@ -676,6 +701,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_already_absent_delete_outcome_is_preserved() {
+        let planned = artifact(1, "example-user/project-alpha");
+        let plan = plan(vec![planned.clone()]);
+        let review = reviewed(&plan, vec![RevalidationState::Unchanged]);
+        let provider = Arc::new(FakeProvider::new(
+            account("example-user"),
+            lookup_map(vec![(
+                planned.clone(),
+                FakeLookup::Present(Box::new(planned.clone())),
+            )]),
+            delete_map(vec![(planned, FakeDelete::AlreadyAbsent)]),
+        ));
+
+        let report = ExecutionService::new(provider)
+            .execute(
+                &plan,
+                &review,
+                ExecutionAuthorization::interactive_confirmation(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.count(ExecutionState::AlreadyAbsent), 1);
+        assert!(report.is_complete_success());
+    }
+
+    #[tokio::test]
     async fn delete_not_found_becomes_already_absent() {
         let planned = artifact(1, "example-user/project-alpha");
         let plan = plan(vec![planned.clone()]);
@@ -684,7 +736,7 @@ mod tests {
             account("example-user"),
             lookup_map(vec![(
                 planned.clone(),
-                FakeLookup::Present(planned.clone()),
+                FakeLookup::Present(Box::new(planned.clone())),
             )]),
             delete_map(vec![(planned, FakeDelete::NotFound)]),
         ));
@@ -719,7 +771,7 @@ mod tests {
                 account("example-user"),
                 lookup_map(vec![(
                     planned.clone(),
-                    FakeLookup::Present(planned.clone()),
+                    FakeLookup::Present(Box::new(planned.clone())),
                 )]),
                 delete_map(vec![(planned, response)]),
             ));
@@ -760,7 +812,7 @@ mod tests {
             lookup_map(vec![
                 (first.clone(), FakeLookup::Present(first.clone())),
                 (second, FakeLookup::Absent),
-                (third, FakeLookup::Present(changed_third)),
+                (third, FakeLookup::Present(Box::new(changed_third))),
             ]),
             delete_map(vec![(first.clone(), FakeDelete::Deleted)]),
         ));
