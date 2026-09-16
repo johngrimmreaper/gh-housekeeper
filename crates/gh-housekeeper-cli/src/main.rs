@@ -3,8 +3,9 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, RevalidationService, RevalidationState, ScanOptions,
-    ScanScope, StorageBucket, StoragePressureLevel, format_bytes, matches_glob, parse_duration,
+    ExecutionState, InventoryService, MonitoringService, RevalidationService, RevalidationState,
+    ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
+    parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
@@ -354,10 +355,9 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
         .thresholds()
         .context("invalid monitoring thresholds")?;
 
-    let snapshot = InventoryService::new(provider)
-        .scan(command.scope.scan_options())
+    let report = MonitoringService::new(provider)
+        .check(command.scope.scan_options(), thresholds)
         .await?;
-    let pressure = thresholds.evaluate(snapshot.total_bytes());
 
     match command.format {
         OutputFormat::Json => {
@@ -367,19 +367,21 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
                     "config_path": loaded.path,
                     "config_persisted": loaded.persisted,
                     "monitoring": loaded.config.monitoring,
-                    "account": snapshot.account,
-                    "scope": snapshot.scope,
-                    "scanned_at": snapshot.scanned_at,
-                    "artifact_count": snapshot.artifact_count(),
-                    "pressure": pressure,
-                    "issues": snapshot.issues,
-                    "telemetry": snapshot.telemetry,
+                    "account": report.account,
+                    "scope": report.scope,
+                    "scanned_at": report.scanned_at,
+                    "elapsed_ms": report.elapsed_ms,
+                    "repository_count": report.repository_count,
+                    "artifact_count": report.artifact_count,
+                    "pressure": report.pressure,
+                    "issues": report.issues,
+                    "telemetry": report.telemetry,
                 }))?
             );
         }
         OutputFormat::Table => {
-            println!("Account:              {}", snapshot.account.login);
-            println!("Scope:                {}", format_scope(&snapshot.scope));
+            println!("Account:              {}", report.account.login);
+            println!("Scope:                {}", format_scope(&report.scope));
             println!(
                 "Configuration:        {}{}",
                 loaded.path.display(),
@@ -393,27 +395,31 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
                 "Check interval:       {}m",
                 loaded.config.monitoring.check_interval_minutes
             );
-            println!("Artifacts:            {}", snapshot.artifact_count());
+            println!("Repositories:         {}", report.repository_count);
+            println!("Artifacts:            {}", report.artifact_count);
             println!(
                 "Current storage:      {}",
-                format_bytes(pressure.total_bytes)
+                format_bytes(report.pressure.total_bytes)
             );
-            println!("Pressure:             {}", pressure_label(pressure.level));
+            println!(
+                "Pressure:             {}",
+                pressure_label(report.pressure.level)
+            );
             println!(
                 "Warning threshold:    {}",
-                format_optional_bytes(pressure.warning_bytes)
+                format_optional_bytes(report.pressure.warning_bytes)
             );
             println!(
                 "Critical threshold:   {}",
-                format_optional_bytes(pressure.critical_bytes)
+                format_optional_bytes(report.pressure.critical_bytes)
             );
-            if pressure.level == StoragePressureLevel::Unconfigured {
+            if report.pressure.level == StoragePressureLevel::Unconfigured {
                 println!();
                 println!(
                     "Monitoring thresholds are unconfigured; this status is observational only."
                 );
             }
-            print_scan_issues(&snapshot.issues);
+            print_scan_issues(&report.issues);
         }
     }
 
