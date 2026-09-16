@@ -217,7 +217,9 @@ pub enum ConfigError {
     Parse(toml::de::Error),
     #[error("failed to serialize configuration: {0}")]
     Serialize(toml::ser::Error),
-    #[error("configuration schema version {found} is unsupported; supported version is {supported}")]
+    #[error(
+        "configuration schema version {found} is unsupported; supported version is {supported}"
+    )]
     UnsupportedSchemaVersion { found: u32, supported: u32 },
     #[error("monitoring check interval must be greater than zero minutes")]
     ZeroCheckInterval,
