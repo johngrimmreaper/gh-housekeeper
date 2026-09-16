@@ -277,7 +277,6 @@ struct StatusCommand {
     format: OutputFormat,
 }
 
-
 #[derive(Args)]
 struct MonitorCommand {
     #[command(subcommand)]
@@ -459,7 +458,6 @@ fn format_optional_bytes(value: Option<u64>) -> String {
         .unwrap_or_else(|| "unconfigured".to_owned())
 }
 
-
 async fn run_monitor_once(
     provider: Arc<dyn ArtifactProvider>,
     command: MonitorOnceCommand,
@@ -508,8 +506,8 @@ async fn run_monitor_once(
 }
 
 fn run_monitor_history(command: MonitorHistoryCommand) -> Result<()> {
-    let paths =
-        StatePaths::discover().context("failed to determine local gh-housekeeper state directory")?;
+    let paths = StatePaths::discover()
+        .context("failed to determine local gh-housekeeper state directory")?;
     let store = MonitoringHistoryStore::from_paths(&paths);
     let history = store
         .read_all()
@@ -1521,7 +1519,6 @@ mod tests {
             "repo:example-user/project-alpha"
         );
     }
-
 
     #[test]
     fn zero_monitor_history_limit_means_all_samples() {
