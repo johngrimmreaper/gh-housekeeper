@@ -1,11 +1,11 @@
-mod config;
 mod audit;
+mod config;
 
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
 };
 pub use config::{
-    CONFIG_SCHEMA_VERSION, AppConfig, ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
+    AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
 };
 
 use std::{env, path::PathBuf};
