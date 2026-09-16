@@ -145,7 +145,10 @@ impl RevalidationService {
     }
 }
 
-fn ensure_same_account(planned: &Account, current: &Account) -> Result<(), RevalidationError> {
+pub(crate) fn ensure_same_account(
+    planned: &Account,
+    current: &Account,
+) -> Result<(), RevalidationError> {
     if planned == current {
         return Ok(());
     }
@@ -158,7 +161,7 @@ fn ensure_same_account(planned: &Account, current: &Account) -> Result<(), Reval
     })
 }
 
-fn changed_fields(planned: &Artifact, current: &Artifact) -> Vec<ArtifactField> {
+pub(crate) fn changed_fields(planned: &Artifact, current: &Artifact) -> Vec<ArtifactField> {
     let mut fields = Vec::new();
 
     if planned.repository != current.repository {

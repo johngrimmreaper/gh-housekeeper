@@ -1,9 +1,14 @@
 mod cleanup;
+mod execution;
 mod revalidation;
 
 pub use cleanup::{
     CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,
     PlanReason,
+};
+pub use execution::{
+    ExecutionAuthorization, ExecutionAuthorizationKind, ExecutionError, ExecutionItem,
+    ExecutionReport, ExecutionService, ExecutionState,
 };
 pub use revalidation::{
     ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
