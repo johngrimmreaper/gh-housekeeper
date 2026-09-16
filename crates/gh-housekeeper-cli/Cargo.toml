@@ -19,3 +19,4 @@ gh-housekeeper-policy = { path = "../gh-housekeeper-policy" }
 gh-housekeeper-storage = { path = "../gh-housekeeper-storage" }
 serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
