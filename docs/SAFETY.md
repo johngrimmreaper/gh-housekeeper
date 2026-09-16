@@ -49,7 +49,7 @@ The GitHub token wrapper deliberately redacts `Debug` output.
 
 Artifact archives are not downloaded for normal inventory, storage aggregation, policy classification, or deletion eligibility. GitHub metadata already exposes artifact ID, name, size, timestamps, expiration state, repository association, and workflow-run references.
 
-Actions-cache inventory is also metadata-only and currently read-only. It records cache ID, repository, key, version, Git ref, creation time, last-accessed time, and size. The current CLI has no cache DELETE path, and cache inventory state cannot authorize artifact deletion.
+Actions-cache inventory is also metadata-only and currently read-only. It records cache ID, repository, key, version, Git ref, creation time, last-accessed time, and size. `classify caches` may evaluate that stable snapshot through the shared resource-aware policy engine and report potential recovery, but it creates no cleanup plan and has no mutation capability. The current CLI has no cache DELETE path, and cache inventory/classification state cannot authorize deletion.
 
 ## Rate limits and retries
 

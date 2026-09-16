@@ -2,60 +2,95 @@
 
 ## Principles
 
-Policy is declarative, repository-agnostic, deterministic, and explainable.
+Policy is declarative, repository-agnostic, deterministic, resource-aware, and explainable.
 
-Artifact names have no intrinsic meaning. A string that resembles a build output, test report, handoff, commit SHA, run number, or release asset is not treated specially unless a user rule or verified metadata says so.
+Names have no intrinsic semantic meaning. An artifact name, cache key, branch, workflow, or Git ref is never treated specially unless a user rule or verified provider metadata says so.
 
-## Implemented policy slice
+## Implemented policy resources
 
-The current policy engine is explicitly **artifact-only**. Cache inventory being present does not make cache entries eligible for artifact policy evaluation or deletion.
+The current policy engine supports two strong resource kinds:
 
-The policy crate accepts TOML and currently supports:
+- `artifact`;
+- `cache`.
 
-- default retention through `defaults.keep_days`;
-- repository, workflow, artifact-name, and branch glob selectors;
-- per-rule `keep_days`;
-- explicit `protect = true`;
-- `keep_latest` over the complete set of artifacts matched by that rule;
-- structured `Keep`, `Delete`, `Protected`, and `ManualReview` decisions;
-- structured reason codes, rule IDs, and human-readable explanations;
-- deterministic specificity: a rule with more selectors outranks a less-specific retention rule;
-- safe conflict handling: equally specific matching retention rules with different `keep_days` values become `ManualReview`.
+Rules that omit `resource` remain artifact rules. This preserves compatibility with policy files written before cache support existed.
 
-Example:
+Artifact selectors are:
+
+- `repository`;
+- `workflow`;
+- `artifact`;
+- `branch`.
+
+Cache selectors are:
+
+- `repository`;
+- `key`;
+- `ref`.
+
+Cross-resource selectors are rejected during policy validation. For example, a cache rule cannot use `artifact`, and an artifact rule cannot use `key` or `keep_unused_days`.
+
+## Defaults
+
+Artifact retention keeps the existing product default:
 
 ```toml
 [defaults]
 keep_days = 30
+```
 
+Cache defaults are nested by resource:
+
+```toml
+[defaults.caches]
+keep_days = 30
+# keep_unused_days = 7
+```
+
+`keep_days` measures age from cache creation. Optional `keep_unused_days` measures time since `last_accessed_at`.
+
+Thirty days is a gh-housekeeper product default, not a GitHub rule.
+
+Adding cache support does not change the semantic fingerprint of an otherwise unchanged legacy artifact policy when cache defaults remain at their built-in values. Cache-specific defaults and cache rules contribute to the fingerprint only when they are actually configured.
+
+## Rules
+
+Artifact example:
+
+```toml
 [[rules]]
 id = "short-lived-nightlies"
+resource = "artifact"
 repository = "example-user/*"
 artifact = "nightly-*"
 keep_days = 7
 keep_latest = 5
-
-[[rules]]
-id = "protect-release-artifacts"
-repository = "example-user/project-alpha"
-artifact = "release-*"
-protect = true
 ```
 
-`keep_latest` does not guess artifact families. Its grouping scope is exactly the match set selected by the rule. Add repository, workflow, artifact, and/or branch selectors to make that set as narrow as required.
+Because `artifact` is the compatibility default, `resource = "artifact"` may be omitted.
 
-Workflow-name rules only match inventory records that actually contain workflow-name metadata. Expensive metadata enrichment remains a later application layer and is not silently inferred by the policy engine.
-
-## Ordinary default
-
-The initial gh-housekeeper product default remains:
+Cache example:
 
 ```toml
-[defaults]
-keep_days = 30
+[[rules]]
+id = "linux-main-cache"
+resource = "cache"
+repository = "example-user/*"
+key = "linux-*"
+ref = "refs/heads/main"
+keep_days = 14
+keep_unused_days = 7
 ```
 
-Thirty days is a product default for ordinary CI artifacts, not a GitHub rule.
+Protection works for both supported resources:
+
+```toml
+[[rules]]
+id = "protect-release-cache"
+resource = "cache"
+key = "release-*"
+protect = true
+```
 
 ## Decisions
 
@@ -68,28 +103,59 @@ Policy output uses structured decisions:
 
 Every decision includes structured reason code(s), human-readable explanation(s), and applicable rule identifier(s). Free-form explanation text is not the policy data model.
 
-## Precedence
+## Precedence and conflicts
 
-Explicit protection outranks destructive retention rules. `keep_latest` then protects the selected newest artifacts from ordinary retention deletion. For `keep_days`, the matching rule with the greatest number of selectors wins.
+Explicit protection outranks destructive retention. `keep_latest` then protects the selected newest resources from ordinary retention deletion.
 
-If multiple equally specific applicable retention rules request different values, the engine emits `ManualReview` instead of choosing a destructive result.
+For retention, the matching rule with the greatest number of selectors wins. Equally specific artifact retention rules with conflicting values become `ManualReview`.
 
-## Planned multi-resource evolution
+For caches, the effective retention request is the pair `(keep_days, keep_unused_days)`. Equally specific matching cache rules with different pairs become `ManualReview`.
 
-The next policy work should add resource-aware configuration only after cache requirements are represented by strong domain types. Cache retention needs `last_accessed_at` semantics (for example `keep_unused_days`) in addition to creation age. Workflow runs need selectors such as workflow, event, conclusion, and branch. Run logs remain a distinct cleanup operation from the run itself.
+Cache deletion classification is deliberately conservative: a cache becomes `Delete` only when **every configured retention criterion has expired**. If both creation-age and unused-age retention are configured, both must be expired. If a rule configures only one of them, that one criterion controls.
 
-A future syntax may separate defaults by resource kind and allow rules to identify their resource, but the current parser deliberately does not accept speculative cache/run policy syntax yet.
+`keep_latest` uses the complete resource set matched by the rule. It does not infer resource families from names.
 
-Later policy slices may also add generic dimensions such as:
+## Read-only cache classification CLI
 
-- event;
-- pull-request state;
-- workflow conclusion;
-- minimum/maximum age;
-- minimum/maximum size;
-- release/tag protection;
-- deleted-branch rules;
-- PR grace periods;
-- repository storage limits and storage-pressure cleanup.
+The CLI exposes policy evaluation without planning or mutation:
 
-These require either additional metadata or cleanup-planner context and should not be guessed from artifact names.
+```text
+gh-housekeeper classify caches
+gh-housekeeper classify caches --repo example-user/project-alpha
+gh-housekeeper classify caches --policy ~/.config/gh-housekeeper/policy.toml --explain
+gh-housekeeper classify caches --format json
+```
+
+This path:
+
+1. enumerates the complete selected cache scope;
+2. builds a stable `CacheInventorySnapshot`;
+3. classifies that snapshot with `PolicyEngine`;
+4. reports counts, decisions, reasons, policy fingerprint, and potential reclaimable cache bytes.
+
+It does **not** create an immutable cleanup plan, revalidate targets, send DELETE, or write execution audit records. A partial cache scan may still be classified for observability, but any future destructive cache planner must reject incomplete snapshots just as the artifact planner does.
+
+## Destructive support
+
+Destructive policy application remains implemented only for artifacts.
+
+Artifact cleanup continues through:
+
+```text
+complete snapshot
+    -> classify
+    -> immutable exact-target plan
+    -> review
+    -> exact remote revalidation
+    -> explicit authorization
+    -> mutation
+    -> durable audit
+```
+
+Cache planning, cache exact-target revalidation, cache deletion, and cache execution audit are not yet exposed.
+
+## Planned resources
+
+Workflow runs and workflow run logs are later resource families. Run policy will require verified metadata such as workflow, event, conclusion, branch, and timestamps. Run-log deletion must remain a distinct operation from deleting the run itself.
+
+Before workflow-run deletion enters planning, dependency resolution must account for resources implicitly removed by deleting a run so artifacts are not redundantly targeted or double-counted as reclaimable storage.

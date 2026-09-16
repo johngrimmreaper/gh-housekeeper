@@ -6,7 +6,7 @@ The project is designed around a shared domain model and application layer that 
 
 ## Current implementation
 
-The mature artifact housekeeping slice and the first read-only cache inventory slice are implemented:
+The mature artifact housekeeping slice plus read-only cache inventory and policy-classification slices are implemented:
 
 - GitHub authentication prefers `gh auth token`, with `GITHUB_TOKEN` as a fallback;
 - authenticated-account detection;
@@ -23,13 +23,16 @@ The mature artifact housekeeping slice and the first read-only cache inventory s
 - artifact glob filtering, age filtering, and sorting;
 - provider telemetry for API request count and remaining primary rate limit when known;
 - per-repository scan issues instead of discarding an otherwise useful inventory;
-- a declarative TOML policy engine with explainable keep/delete/protected/manual-review decisions;
-- generic repository/workflow/artifact/branch glob rules, explicit protection, and `keep_latest`;
+- a declarative, resource-aware TOML policy engine with explainable keep/delete/protected/manual-review decisions;
+- artifact rules with repository/workflow/artifact/branch selectors plus cache rules with repository/key/ref selectors;
+- cache retention based on creation age and optional last-accessed/unused age, with conservative all-criteria-expired deletion classification;
+- a read-only `classify caches` CLI path that evaluates the complete cache snapshot and never creates a cleanup plan or sends DELETE;
+- explicit protection and `keep_latest` for both currently-supported policy resources;
 - immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Cache support is intentionally read-only in this checkpoint. Artifact policy, immutable plans, revalidation, guarded deletion, and audit remain the destructive reference implementation; cache policy/planning/revalidation/deletion have not been enabled yet. Workflow-run and workflow-run-log inventory are later multi-resource slices.
+Cache mutation is intentionally disabled in this checkpoint. Cache inventory and policy classification are implemented as read-only paths. Artifact immutable plans, revalidation, guarded deletion, and audit remain the destructive reference implementation; cache planning, revalidation, deletion, and audit have not been enabled yet. Workflow-run and workflow-run-log inventory are later multi-resource slices.
 
 Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
@@ -58,6 +61,12 @@ gh-housekeeper caches --repo example-user/project-alpha
 gh-housekeeper caches --key 'linux-*' --unused-for 7d
 gh-housekeeper caches --ref 'refs/heads/release-*' --older-than 14d
 gh-housekeeper caches --sort last-accessed --format json
+
+# Read-only policy classification of the complete cache snapshot.
+gh-housekeeper classify caches
+gh-housekeeper classify caches --repo example-user/project-alpha
+gh-housekeeper classify caches --policy ~/.config/gh-housekeeper/policy.toml --explain
+gh-housekeeper classify caches --format json
 
 gh-housekeeper stats --group-by repo
 
