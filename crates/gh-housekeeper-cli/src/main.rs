@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionAuthorizationKind,
-    ExecutionService, ExecutionState, InventoryService, RevalidationService, RevalidationState,
+    Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
+    ExecutionState, InventoryService, RevalidationService, RevalidationState,
     ScanOptions, ScanScope, StorageBucket, format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
@@ -199,7 +199,10 @@ struct RevalidateCommand {
 
 #[derive(Args)]
 struct ApplyCommand {
-    #[arg(value_name = "PLAN", help = "Path to an immutable cleanup-plan JSON file")]
+    #[arg(
+        value_name = "PLAN",
+        help = "Path to an immutable cleanup-plan JSON file"
+    )]
     plan: PathBuf,
 
     #[arg(
@@ -628,7 +631,6 @@ async fn run_revalidate(
     Ok(())
 }
 
-
 async fn run_apply(provider: Arc<dyn ArtifactProvider>, command: ApplyCommand) -> Result<()> {
     let input = fs::read_to_string(&command.plan)
         .with_context(|| format!("failed to read cleanup plan {}", command.plan.display()))?;
@@ -676,7 +678,12 @@ async fn run_apply(provider: Arc<dyn ArtifactProvider>, command: ApplyCommand) -
         return Ok(());
     }
 
-    print_apply_review(&command.plan, &plan, &revalidation);
+    print_apply_review(
+        &command.plan,
+        &plan,
+        &revalidation,
+        matches!(command.format, OutputFormat::Json),
+    );
 
     let authorization = if command.yes {
         authorize_apply(true, false, None)?
@@ -688,7 +695,9 @@ async fn run_apply(provider: Arc<dyn ArtifactProvider>, command: ApplyCommand) -
         }
 
         eprint!("Type 'delete' to apply this exact cleanup plan: ");
-        io::stderr().flush().context("failed to flush confirmation prompt")?;
+        io::stderr()
+            .flush()
+            .context("failed to flush confirmation prompt")?;
         let mut response = String::new();
         io::stdin()
             .read_line(&mut response)
@@ -699,7 +708,9 @@ async fn run_apply(provider: Arc<dyn ArtifactProvider>, command: ApplyCommand) -
     let execution = ExecutionService::new(provider)
         .execute(&plan, &revalidation, authorization)
         .await
-        .context("guarded cleanup execution failed before a complete execution report was produced")?;
+        .context(
+            "guarded cleanup execution failed before a complete execution report was produced",
+        )?;
 
     let paths = StatePaths::discover().context(
         "remote execution completed, but the local state directory could not be determined; do not blindly retry the apply",
@@ -766,35 +777,52 @@ fn print_apply_review(
     plan_path: &std::path::Path,
     plan: &CleanupPlan,
     revalidation: &gh_housekeeper_core::RevalidationReport,
+    to_stderr: bool,
 ) {
-    println!("Plan:                 {}", plan_path.display());
-    println!("Account:              {}", plan.account().login);
-    println!("Policy hash:          {}", plan.policy_hash());
-    println!("Targets:              {}", plan.targets().len());
-    println!(
-        "Potential recovery:  {}",
-        format_bytes(plan.summary().reclaimable_bytes())
-    );
-    println!();
-    println!(
-        "{:<12} {:<40} {:<34} {:>12} STATE",
-        "ID", "REPOSITORY", "ARTIFACT", "SIZE"
-    );
+    let lines = {
+        let mut lines = vec![
+            format!("Plan:                 {}", plan_path.display()),
+            format!("Account:              {}", plan.account().login),
+            format!("Policy hash:          {}", plan.policy_hash()),
+            format!("Targets:              {}", plan.targets().len()),
+            format!(
+                "Potential recovery:  {}",
+                format_bytes(plan.summary().reclaimable_bytes())
+            ),
+            String::new(),
+            format!(
+                "{:<12} {:<40} {:<34} {:>12} STATE",
+                "ID", "REPOSITORY", "ARTIFACT", "SIZE"
+            ),
+        ];
 
-    for (target, item) in plan.targets().iter().zip(&revalidation.items) {
-        let artifact = target.artifact();
-        println!(
-            "{:<12} {:<40} {:<34} {:>12} {:?}",
-            artifact.id,
-            artifact.repository.full_name,
-            artifact.name,
-            format_bytes(artifact.size_in_bytes),
-            item.state
+        for (target, item) in plan.targets().iter().zip(&revalidation.items) {
+            let artifact = target.artifact();
+            lines.push(format!(
+                "{:<12} {:<40} {:<34} {:>12} {:?}",
+                artifact.id,
+                artifact.repository.full_name,
+                artifact.name,
+                format_bytes(artifact.size_in_bytes),
+                item.state
+            ));
+        }
+
+        lines.push(String::new());
+        lines.push(
+            "Only exact Unchanged targets may reach DELETE after a final just-in-time check."
+                .to_owned(),
         );
-    }
+        lines
+    };
 
-    println!();
-    println!("Only exact Unchanged targets may reach DELETE after a final just-in-time check.");
+    for line in lines {
+        if to_stderr {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
 }
 
 fn authorize_apply(
@@ -879,7 +907,7 @@ mod tests {
         let authorization = authorize_apply(true, false, None).unwrap();
         assert_eq!(
             authorization.kind(),
-            ExecutionAuthorizationKind::AutomationYes
+            gh_housekeeper_core::ExecutionAuthorizationKind::AutomationYes
         );
     }
 
@@ -894,7 +922,7 @@ mod tests {
         let authorization = authorize_apply(false, true, Some("delete\n")).unwrap();
         assert_eq!(
             authorization.kind(),
-            ExecutionAuthorizationKind::InteractiveConfirmation
+            gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation
         );
 
         assert!(authorize_apply(false, true, Some("yes\n")).is_err());
