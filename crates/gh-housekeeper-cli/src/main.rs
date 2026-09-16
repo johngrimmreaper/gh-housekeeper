@@ -11,7 +11,7 @@ use gh_housekeeper_core::{
     monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
-use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
+use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
     AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig,
     MonitoringHistoryStore, MonitoringReadIssue, StatePaths,
@@ -52,6 +52,8 @@ enum Command {
     Artifacts(ArtifactsCommand),
     /// List Actions caches with generic filters, sorting, and storage totals.
     Caches(CachesCommand),
+    /// Classify resources against policy without planning or deleting anything.
+    Classify(ClassifyCommand),
     /// Aggregate Actions artifact storage.
     Stats(StatsCommand),
     /// Build an immutable dry-run cleanup plan without deleting anything.
@@ -227,6 +229,40 @@ struct CachesCommand {
         help = "Only caches not accessed for at least this long, for example 7d"
     )]
     unused_for: Option<String>,
+}
+
+#[derive(Args)]
+struct ClassifyCommand {
+    #[command(subcommand)]
+    resource: ClassifyResource,
+}
+
+#[derive(Subcommand)]
+enum ClassifyResource {
+    /// Classify Actions caches using the complete cache inventory snapshot.
+    Caches(ClassifyCachesCommand),
+}
+
+#[derive(Args)]
+struct ClassifyCachesCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "TOML policy file; defaults to the built-in cache retention policy"
+    )]
+    policy: Option<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    #[arg(
+        long,
+        help = "Show every structured reason attached to each cache decision"
+    )]
+    explain: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -420,6 +456,9 @@ async fn main() -> Result<()> {
         Command::Repos(command) => run_repos(provider()?, command).await,
         Command::Artifacts(command) => run_artifacts(provider()?, command).await,
         Command::Caches(command) => run_caches(provider()?, command).await,
+        Command::Classify(command) => match command.resource {
+            ClassifyResource::Caches(command) => run_classify_caches(provider()?, command).await,
+        },
         Command::Stats(command) => run_stats(provider()?, command).await,
         Command::Plan(command) => run_plan(provider()?, command).await,
         Command::Revalidate(command) => run_revalidate(provider()?, command).await,
@@ -1326,6 +1365,104 @@ async fn run_caches(provider: Arc<dyn CacheProvider>, command: CachesCommand) ->
     Ok(())
 }
 
+async fn run_classify_caches(
+    provider: Arc<dyn CacheProvider>,
+    command: ClassifyCachesCommand,
+) -> Result<()> {
+    let snapshot = CacheInventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+
+    let (policy_label, config) = match command.policy.as_ref() {
+        Some(path) => {
+            let input = fs::read_to_string(path)
+                .with_context(|| format!("failed to read policy file {}", path.display()))?;
+            let config = PolicyConfig::from_toml(&input)
+                .with_context(|| format!("invalid policy file {}", path.display()))?;
+            (path.display().to_string(), config)
+        }
+        None => ("built-in default".to_owned(), PolicyConfig::default()),
+    };
+
+    let engine = PolicyEngine::new(config)?;
+    let policy_hash = engine.config().fingerprint();
+    let report = engine.classify_cache_snapshot(&snapshot);
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "policy": policy_label,
+                    "policy_hash": policy_hash,
+                    "account": snapshot.account,
+                    "scope": snapshot.scope,
+                    "scanned_at": snapshot.scanned_at,
+                    "cache_count": snapshot.cache_count(),
+                    "total_bytes": snapshot.total_bytes(),
+                    "classification": report,
+                    "issues": snapshot.issues,
+                    "telemetry": snapshot.telemetry,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!("Policy:              {policy_label}");
+            println!("Policy hash:         {policy_hash}");
+            println!("Caches scanned:      {}", snapshot.cache_count());
+            println!("Current storage:     {}", format_bytes(snapshot.total_bytes()));
+            println!("Keep:                {}", report.count(Decision::Keep));
+            println!("Protected:           {}", report.count(Decision::Protected));
+            println!(
+                "Manual review:       {}",
+                report.count(Decision::ManualReview)
+            );
+            println!("Delete candidate:    {}", report.count(Decision::Delete));
+            println!(
+                "Potential recovery:  {}",
+                format_bytes(report.reclaimable_bytes())
+            );
+
+            if report.decisions.is_empty() {
+                println!();
+                println!("No caches were present in the selected scope.");
+            } else {
+                println!();
+                println!(
+                    "{:<12} {:<40} {:<30} {:>12} {:<15} REF",
+                    "ID", "REPOSITORY", "KEY", "SIZE", "DECISION"
+                );
+                for item in &report.decisions {
+                    println!(
+                        "{:<12} {:<40} {:<30} {:>12} {:<15} {}",
+                        item.cache_id,
+                        item.repository,
+                        item.key,
+                        format_bytes(item.size_in_bytes),
+                        decision_label(item.decision),
+                        item.git_ref
+                    );
+
+                    if command.explain {
+                        for reason in &item.reasons {
+                            println!(
+                                "  -> {} [rule: {}]: {}",
+                                reason.code.as_str(),
+                                reason.rule_id.as_deref().unwrap_or("<default>"),
+                                reason.explanation
+                            );
+                        }
+                    }
+                }
+            }
+
+            print_scan_issues(&snapshot.issues);
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_stats(provider: Arc<dyn ArtifactProvider>, command: StatsCommand) -> Result<()> {
     let snapshot = InventoryService::new(provider)
         .scan(command.scope.scan_options())
@@ -1897,6 +2034,15 @@ fn print_scan_issues(issues: &[gh_housekeeper_core::ScanIssue]) {
     }
 }
 
+fn decision_label(decision: Decision) -> &'static str {
+    match decision {
+        Decision::Keep => "keep",
+        Decision::Delete => "delete",
+        Decision::Protected => "protected",
+        Decision::ManualReview => "manual_review",
+    }
+}
+
 fn format_age(seconds: u64) -> String {
     const MINUTE: u64 = 60;
     const HOUR: u64 = 60 * MINUTE;
@@ -1916,6 +2062,14 @@ fn format_age(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decision_labels_are_stable() {
+        assert_eq!(decision_label(Decision::Keep), "keep");
+        assert_eq!(decision_label(Decision::Delete), "delete");
+        assert_eq!(decision_label(Decision::Protected), "protected");
+        assert_eq!(decision_label(Decision::ManualReview), "manual_review");
+    }
 
     #[test]
     fn formats_age_for_human_cli_output() {
