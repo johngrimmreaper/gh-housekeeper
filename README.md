@@ -97,6 +97,15 @@ gh-housekeeper status --repo example-user/project-alpha --format json
 gh-housekeeper monitor once --repo example-user/project-alpha
 gh-housekeeper monitor once --repo example-user/project-alpha --format json
 
+# Foreground scheduler. Uses configured interval (30m by default) until Ctrl-C.
+gh-housekeeper monitor watch --repo example-user/project-alpha
+
+# Bounded fast foreground validation: exactly two attempts, one-second fixed delay.
+gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --interval 1s
+
+# Streaming JSON lines: one object per iteration/failure plus a final summary.
+gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --interval 1s --format json
+
 # Read durable monitoring samples locally; no GitHub authentication/network required.
 gh-housekeeper monitor history
 gh-housekeeper monitor history --limit 50
@@ -167,3 +176,8 @@ Monitoring orchestration now lives in the shared core as `MonitoringService`. CL
 
 
 Durable monitoring samples live under the platform state directory in `monitoring/v1/`. `monitor once` runs one read-only scan through `MonitoringRunner`, persists the resulting `MonitoringReport`, and returns the sample path. `monitor history` reads those samples newest-first and reports corrupt/truncated records separately.
+
+
+`monitor watch` is an explicit foreground scheduler; it never daemonizes itself. The first check runs immediately, subsequent checks use fixed delay after the previous attempt finishes, so scans never overlap. The configured interval is used by default, while `--interval` is an explicit foreground override useful for testing. `--iterations 0` (the default) means run until Ctrl-C; positive values make the run bounded.
+
+The shared transition evaluator compares only compatible monitoring series. Provider/account and scan scope must match, and repository exclusions are part of scope compatibility. Partial scans containing `ScanIssue` do not produce pressure transitions. A changed threshold is recorded explicitly on a transition so downstream notification code can distinguish configuration-driven changes.

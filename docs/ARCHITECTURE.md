@@ -88,6 +88,11 @@ Local `config path/show/init` commands are also outside the provider path. `stat
 
 Scheduler-ready monitoring uses dependency inversion rather than making core depend on storage. Core defines `MonitoringSampleSink` and `MonitoringRunner<S>`; `MonitoringHistoryStore` in the storage crate implements that sink. A runner iteration performs exactly one `MonitoringService::check`, persists exactly one report, and returns both the report and a sink-specific receipt. The CLI exposes this as `monitor once`. `monitor history` is local/read-only and never constructs a provider.
 
+
+Core also provides `MonitoringScheduler<S>`. It runs `MonitoringRunner` sequentially with fixed delay after completion, so an iteration that takes longer than the requested interval cannot overlap with another scan. Success delay and failure delay are explicit non-zero durations; the current CLI uses the same interval for both, preventing a hot retry loop. A watch-channel-backed cancellation handle can stop an in-flight read-only iteration or a pending delay cleanly. The foreground `monitor watch` command wires Ctrl-C to this cancellation path and may optionally stop after a bounded number of attempts.
+
+Pressure changes are derived in core through `evaluate_pressure_transition`. Transition compatibility includes provider/account, logical scan scope, and the case-insensitive set of excluded repositories. Reports with scan issues are not used to assert pressure transitions. The resulting structured evaluation distinguishes first sample, incompatible series, incomplete scan, stable pressure, and changed pressure; changed transitions also record previous/current totals and whether thresholds changed.
+
 Deletion follows this invariant:
 
 ```text

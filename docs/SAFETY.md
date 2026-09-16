@@ -76,6 +76,11 @@ Persistent monitoring configuration is also non-authoritative for deletion. Thre
 
 Persisted monitoring history is observational only. `MonitoringRunner` performs one read-only inventory check followed by sample persistence; it has no cleanup-plan, execution-authorization, exact-artifact lookup, or DELETE path. Persistence failure is surfaced after the read-only scan and does not trigger an automatic rescan loop. `monitor history` reads local files only and does not discover GitHub credentials or contact the network.
 
+
+The monitoring scheduler remains observational. It executes at most one read-only iteration at a time and waits after completion before the next attempt, so slow scans cannot overlap. Failures wait before retrying rather than spinning. Cancellation may stop the active read-only future; no destructive state is involved. The scheduler type has no policy, cleanup-plan, execution-authorization, executor, or DELETE dependency.
+
+Pressure-transition output is conservative: account/provider and effective scan scope must be compatible, repository exclusions are considered part of that scope, and any `ScanIssue` in either adjacent report blocks a transition claim. This prevents a partial inventory from appearing as a false recovery or pressure drop.
+
 The guarded CLI `apply` path now enforces the confirmation boundary. Interactive deletion requires stdin to be a terminal and requires the exact lowercase confirmation word `delete`. Non-interactive execution without `--yes` is refused. Automation requires a deliberate `--yes`, which creates the distinct automation authorization kind.
 
 Before asking for consent, `apply` revalidates the immutable plan and refuses any `Changed` or `RevalidationFailed` target. After consent, `ExecutionService` performs its own just-in-time exact lookup again before each possible DELETE. Zero-target plans return without prompting or mutation.
