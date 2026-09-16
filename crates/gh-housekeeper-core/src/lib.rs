@@ -1,5 +1,6 @@
 mod cleanup;
 mod execution;
+mod monitoring;
 mod revalidation;
 
 pub use cleanup::{
@@ -9,6 +10,9 @@ pub use cleanup::{
 pub use execution::{
     ExecutionAuthorization, ExecutionAuthorizationKind, ExecutionError, ExecutionItem,
     ExecutionReport, ExecutionService, ExecutionState,
+};
+pub use monitoring::{
+    StoragePressureLevel, StoragePressureReport, StorageThresholdError, StorageThresholds,
 };
 pub use revalidation::{
     ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
