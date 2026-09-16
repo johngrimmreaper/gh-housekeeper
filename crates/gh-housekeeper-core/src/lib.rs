@@ -1,8 +1,12 @@
+mod cache;
 mod cleanup;
 mod execution;
 mod monitoring;
 mod revalidation;
 
+pub use cache::{
+    ActionsCache, CacheInventoryService, CacheInventorySnapshot, CacheProvider, CacheStorageBucket,
+};
 pub use cleanup::{
     CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,
     PlanReason,
@@ -31,7 +35,7 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};
 use globset::Glob;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, sync::Arc, time::Duration};
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +269,35 @@ pub enum ProviderError {
 
 pub type ProviderResult<T> = Result<T, ProviderError>;
 
+/// Common provider capability for account identity, repository discovery, and telemetry.
+///
+/// Artifact providers are adapted to this capability below so the existing artifact safety
+/// pipeline remains source-compatible while newer resource capabilities share repository scans.
+#[async_trait]
+pub trait RepositoryProvider: Send + Sync {
+    async fn account(&self) -> ProviderResult<Account>;
+    async fn repositories(&self, scope: &ScanScope) -> ProviderResult<Vec<Repository>>;
+    fn telemetry(&self) -> ProviderTelemetry;
+}
+
+#[async_trait]
+impl<T> RepositoryProvider for T
+where
+    T: ArtifactProvider + ?Sized,
+{
+    async fn account(&self) -> ProviderResult<Account> {
+        ArtifactProvider::account(self).await
+    }
+
+    async fn repositories(&self, scope: &ScanScope) -> ProviderResult<Vec<Repository>> {
+        ArtifactProvider::repositories(self, scope).await
+    }
+
+    fn telemetry(&self) -> ProviderTelemetry {
+        ArtifactProvider::telemetry(self)
+    }
+}
+
 #[async_trait]
 pub trait ArtifactProvider: Send + Sync {
     async fn account(&self) -> ProviderResult<Account>;
@@ -283,6 +316,79 @@ pub trait ArtifactProvider: Send + Sync {
     fn telemetry(&self) -> ProviderTelemetry;
 }
 
+pub(crate) struct ResourceScan<T> {
+    pub(crate) account: Account,
+    pub(crate) scope: ScanScope,
+    pub(crate) scanned_at: DateTime<Utc>,
+    pub(crate) elapsed_ms: u64,
+    pub(crate) repositories: Vec<Repository>,
+    pub(crate) resources: Vec<T>,
+    pub(crate) issues: Vec<ScanIssue>,
+    pub(crate) telemetry: ProviderTelemetry,
+}
+
+pub(crate) async fn scan_resources<P, T, F, Fut>(
+    provider: Arc<P>,
+    options: ScanOptions,
+    fetch: F,
+) -> ProviderResult<ResourceScan<T>>
+where
+    P: RepositoryProvider + ?Sized + 'static,
+    T: Send + 'static,
+    F: Fn(Arc<P>, Repository) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = ProviderResult<Vec<T>>> + Send,
+{
+    let started = std::time::Instant::now();
+    let account = RepositoryProvider::account(provider.as_ref()).await?;
+    let mut repositories = RepositoryProvider::repositories(provider.as_ref(), &options.scope).await?;
+
+    repositories.retain(|repository| {
+        !options
+            .exclude_repositories
+            .iter()
+            .any(|excluded| excluded.eq_ignore_ascii_case(&repository.full_name))
+    });
+    repositories.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+
+    let concurrency = options.concurrency.clamp(1, 16);
+    let fetch_provider = Arc::clone(&provider);
+    let results = stream::iter(repositories.iter().cloned())
+        .map(move |repository| {
+            let provider = Arc::clone(&fetch_provider);
+            let fetch = fetch.clone();
+            async move {
+                let full_name = repository.full_name.clone();
+                (full_name, fetch(provider, repository).await)
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut resources = Vec::new();
+    let mut issues = Vec::new();
+    for (repository, result) in results {
+        match result {
+            Ok(mut repository_resources) => resources.append(&mut repository_resources),
+            Err(error) => issues.push(ScanIssue {
+                repository: Some(repository),
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(ResourceScan {
+        account,
+        scope: options.scope,
+        scanned_at: Utc::now(),
+        elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+        repositories,
+        resources,
+        issues,
+        telemetry: RepositoryProvider::telemetry(provider.as_ref()),
+    })
+}
+
 pub struct InventoryService {
     provider: Arc<dyn ArtifactProvider>,
 }
@@ -293,43 +399,26 @@ impl InventoryService {
     }
 
     pub async fn scan(&self, options: ScanOptions) -> ProviderResult<InventorySnapshot> {
-        let started = std::time::Instant::now();
-        let account = self.provider.account().await?;
-        let mut repositories = self.provider.repositories(&options.scope).await?;
+        let scan = scan_resources(
+            Arc::clone(&self.provider),
+            options,
+            |provider, repository| async move {
+                ArtifactProvider::artifacts(provider.as_ref(), &repository).await
+            },
+        )
+        .await?;
 
-        repositories.retain(|repository| {
-            !options
-                .exclude_repositories
-                .iter()
-                .any(|excluded| excluded.eq_ignore_ascii_case(&repository.full_name))
-        });
-        repositories.sort_by(|a, b| a.full_name.cmp(&b.full_name));
+        let ResourceScan {
+            account,
+            scope,
+            scanned_at,
+            elapsed_ms,
+            repositories,
+            resources: mut artifacts,
+            issues,
+            telemetry,
+        } = scan;
 
-        let concurrency = options.concurrency.clamp(1, 16);
-        let provider = Arc::clone(&self.provider);
-        let results = stream::iter(repositories.iter().cloned())
-            .map(move |repository| {
-                let provider = Arc::clone(&provider);
-                async move {
-                    let full_name = repository.full_name.clone();
-                    (full_name, provider.artifacts(&repository).await)
-                }
-            })
-            .buffer_unordered(concurrency)
-            .collect::<Vec<_>>()
-            .await;
-
-        let mut artifacts = Vec::new();
-        let mut issues = Vec::new();
-        for (repository, result) in results {
-            match result {
-                Ok(mut repository_artifacts) => artifacts.append(&mut repository_artifacts),
-                Err(error) => issues.push(ScanIssue {
-                    repository: Some(repository),
-                    message: error.to_string(),
-                }),
-            }
-        }
         artifacts.sort_by(|a, b| {
             a.repository
                 .full_name
@@ -340,13 +429,13 @@ impl InventoryService {
 
         Ok(InventorySnapshot {
             account,
-            scope: options.scope,
-            scanned_at: Utc::now(),
-            elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            scope,
+            scanned_at,
+            elapsed_ms,
             repositories,
             artifacts,
             issues,
-            telemetry: self.provider.telemetry(),
+            telemetry,
         })
     }
 }

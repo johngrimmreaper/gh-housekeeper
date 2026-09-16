@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
-    Account, Artifact, ArtifactProvider, DeleteOutcome, ProviderError, ProviderResult,
-    ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility, WorkflowRunRef,
+    Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, DeleteOutcome, ProviderError,
+    ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
+    WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -333,6 +334,37 @@ impl ArtifactProvider for GithubClient {
     }
 }
 
+#[async_trait]
+impl CacheProvider for GithubClient {
+    async fn caches(&self, repository: &Repository) -> ProviderResult<Vec<ActionsCache>> {
+        let repository_ref = RepositoryRef::from(repository);
+        let mut caches = Vec::new();
+        let mut page = 1usize;
+
+        loop {
+            let path = format!(
+                "/repos/{}/actions/caches?per_page={PER_PAGE}&page={page}",
+                repository.full_name
+            );
+            let response: GithubCachePage = self.get_json(&path).await?;
+            let item_count = response.actions_caches.len();
+            caches.extend(
+                response
+                    .actions_caches
+                    .into_iter()
+                    .map(|cache| cache.into_domain(repository_ref.clone())),
+            );
+
+            if item_count == 0 || caches.len() as u64 >= response.total_count {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(caches)
+    }
+}
+
 fn validate_full_name(full_name: &str) -> ProviderResult<()> {
     match full_name.split_once('/') {
         Some((owner, repository)) if !owner.is_empty() && !repository.is_empty() => Ok(()),
@@ -427,6 +459,39 @@ impl From<GithubRepository> for Repository {
 }
 
 #[derive(Deserialize)]
+struct GithubCachePage {
+    total_count: u64,
+    actions_caches: Vec<GithubCache>,
+}
+
+#[derive(Deserialize)]
+struct GithubCache {
+    id: u64,
+    key: String,
+    version: String,
+    #[serde(rename = "ref")]
+    git_ref: String,
+    created_at: DateTime<Utc>,
+    last_accessed_at: DateTime<Utc>,
+    size_in_bytes: u64,
+}
+
+impl GithubCache {
+    fn into_domain(self, repository: RepositoryRef) -> ActionsCache {
+        ActionsCache {
+            id: self.id,
+            repository,
+            key: self.key,
+            version: self.version,
+            git_ref: self.git_ref,
+            created_at: self.created_at,
+            last_accessed_at: self.last_accessed_at,
+            size_in_bytes: self.size_in_bytes,
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct GithubArtifactPage {
     total_count: u64,
     artifacts: Vec<GithubArtifact>,
@@ -484,6 +549,81 @@ impl From<GithubWorkflowRunRef> for WorkflowRunRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    fn spawn_http_fixture(
+        bodies: Vec<String>,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            for body in bodies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                sender
+                    .send(request.lines().next().unwrap_or_default().to_owned())
+                    .unwrap();
+                let response = format!(
+                    "HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+                stream.flush().unwrap();
+            }
+        });
+        (format!("http://{address}"), receiver, handle)
+    }
+
+    #[tokio::test]
+    async fn lists_caches_with_pagination_and_maps_metadata() {
+        let page_one = r#"{"total_count":2,"actions_caches":[{"id":505,"ref":"refs/heads/main","key":"linux-build","version":"version-a","last_accessed_at":"2026-09-10T12:00:00Z","created_at":"2026-09-01T12:00:00Z","size_in_bytes":1024}]}"#.to_owned();
+        let page_two = r#"{"total_count":2,"actions_caches":[{"id":506,"ref":"refs/pull/42/merge","key":"linux-test","version":"version-b","last_accessed_at":"2026-09-11T12:00:00Z","created_at":"2026-09-02T12:00:00Z","size_in_bytes":2048}]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![page_one, page_two]);
+        let client = GithubClient::with_base_url(
+            SecretToken("fictional-token".to_owned()),
+            base_url,
+        )
+        .unwrap();
+        let repository = Repository {
+            id: 1,
+            owner: "example-user".to_owned(),
+            name: "project-alpha".to_owned(),
+            full_name: "example-user/project-alpha".to_owned(),
+            visibility: Visibility::Public,
+            default_branch: "main".to_owned(),
+            archived: false,
+            fork: false,
+        };
+
+        let caches = CacheProvider::caches(&client, &repository).await.unwrap();
+        server.join().unwrap();
+
+        assert_eq!(caches.len(), 2);
+        assert_eq!(caches[0].id, 505);
+        assert_eq!(caches[0].key, "linux-build");
+        assert_eq!(caches[0].git_ref, "refs/heads/main");
+        assert_eq!(caches[0].size_in_bytes, 1024);
+        assert_eq!(caches[1].version, "version-b");
+        assert_eq!(client.telemetry().api_requests, 2);
+
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec![
+                "GET /repos/example-user/project-alpha/actions/caches?per_page=100&page=1 HTTP/1.1",
+                "GET /repos/example-user/project-alpha/actions/caches?per_page=100&page=2 HTTP/1.1",
+            ]
+        );
+    }
 
     #[test]
     fn token_debug_output_is_redacted() {
