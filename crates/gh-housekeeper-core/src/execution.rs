@@ -1,7 +1,7 @@
 use crate::{
     Artifact, ArtifactField, ArtifactProvider, CleanupPlan, DeleteOutcome, ProviderError,
-    ProviderTelemetry, RevalidationError, RevalidationReport, RevalidationState, changed_fields,
-    ensure_same_account,
+    ProviderTelemetry, RevalidationError, RevalidationReport, RevalidationState,
+    revalidation::{changed_fields, ensure_same_account},
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
