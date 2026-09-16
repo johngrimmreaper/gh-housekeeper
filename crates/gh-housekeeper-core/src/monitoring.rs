@@ -1,6 +1,6 @@
 use crate::{
-    Account, ArtifactProvider, InventoryService, ProviderResult, ProviderTelemetry, ScanIssue,
-    ScanOptions, ScanScope,
+    Account, ArtifactProvider, InventoryService, ProviderError, ProviderResult, ProviderTelemetry,
+    ScanIssue, ScanOptions, ScanScope,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -103,6 +103,77 @@ pub struct MonitoringReport {
 
 pub struct MonitoringService {
     provider: Arc<dyn ArtifactProvider>,
+}
+
+pub trait MonitoringSampleSink: Send + Sync {
+    type Error;
+    type Receipt;
+
+    fn persist(&self, report: &MonitoringReport) -> Result<Self::Receipt, Self::Error>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MonitoringIteration<R> {
+    pub report: MonitoringReport,
+    pub receipt: R,
+}
+
+pub struct MonitoringRunner<S> {
+    service: MonitoringService,
+    sink: S,
+}
+
+impl<S> MonitoringRunner<S>
+where
+    S: MonitoringSampleSink,
+{
+    pub fn new(service: MonitoringService, sink: S) -> Self {
+        Self { service, sink }
+    }
+
+    pub async fn run(
+        &self,
+        options: ScanOptions,
+        thresholds: StorageThresholds,
+    ) -> Result<MonitoringIteration<S::Receipt>, MonitoringIterationError<S::Error>> {
+        let report = self
+            .service
+            .check(options, thresholds)
+            .await
+            .map_err(MonitoringIterationError::Provider)?;
+        let receipt = self
+            .sink
+            .persist(&report)
+            .map_err(MonitoringIterationError::Persistence)?;
+
+        Ok(MonitoringIteration { report, receipt })
+    }
+}
+
+#[derive(Debug)]
+pub enum MonitoringIterationError<E> {
+    Provider(ProviderError),
+    Persistence(E),
+}
+
+impl<E> std::fmt::Display for MonitoringIterationError<E>
+where
+    E: std::fmt::Display,
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provider(error) => write!(formatter, "monitoring provider error: {error}"),
+            Self::Persistence(error) => {
+                write!(formatter, "failed to persist monitoring sample: {error}")
+            }
+        }
+    }
+}
+
+impl<E> std::error::Error for MonitoringIterationError<E>
+where
+    E: std::error::Error + 'static,
+{
 }
 
 impl MonitoringService {
@@ -352,6 +423,97 @@ mod tests {
             report.issues[0].repository.as_deref(),
             Some("example-user/project-beta")
         );
+    }
+
+    #[derive(Default)]
+    struct FakeSink {
+        persisted: std::sync::Mutex<Vec<MonitoringReport>>,
+        fail: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+    #[error("fixture persistence failure")]
+    struct FakeSinkError;
+
+    impl MonitoringSampleSink for FakeSink {
+        type Error = FakeSinkError;
+        type Receipt = usize;
+
+        fn persist(&self, report: &MonitoringReport) -> Result<Self::Receipt, Self::Error> {
+            if self.fail {
+                return Err(FakeSinkError);
+            }
+
+            let mut persisted = self.persisted.lock().expect("fake sink mutex poisoned");
+            persisted.push(report.clone());
+            Ok(persisted.len())
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_performs_one_check_and_persists_the_report() {
+        let repo = repository(1, "project-alpha");
+        let provider = Arc::new(FakeProvider::new(
+            vec![repo.clone()],
+            BTreeMap::from([(
+                repo.full_name.clone(),
+                FakeArtifacts::Items(vec![artifact(1, &repo, 350)]),
+            )]),
+        ));
+        let sink = FakeSink::default();
+        let runner = MonitoringRunner::new(MonitoringService::new(provider.clone()), sink);
+
+        let iteration = runner
+            .run(
+                ScanOptions::default(),
+                StorageThresholds::new(Some(300), Some(400)).unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(iteration.receipt, 1);
+        assert_eq!(iteration.report.total_bytes, 350);
+        assert_eq!(
+            iteration.report.pressure.level,
+            StoragePressureLevel::Warning
+        );
+        assert_eq!(provider.exact_lookup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn runner_surfaces_persistence_failure_without_retrying_scan() {
+        let repo = repository(1, "project-alpha");
+        let provider = Arc::new(FakeProvider::new(
+            vec![repo.clone()],
+            BTreeMap::from([(
+                repo.full_name.clone(),
+                FakeArtifacts::Items(vec![artifact(1, &repo, 100)]),
+            )]),
+        ));
+        let sink = FakeSink {
+            fail: true,
+            ..FakeSink::default()
+        };
+        let runner = MonitoringRunner::new(MonitoringService::new(provider.clone()), sink);
+
+        let error = runner
+            .run(
+                ScanOptions::default(),
+                StorageThresholds::new(Some(300), Some(400)).unwrap(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            MonitoringIterationError::Persistence(FakeSinkError)
+        ));
+        assert_eq!(provider.account_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.repository_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.artifact_list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.exact_lookup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
