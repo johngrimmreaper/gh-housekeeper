@@ -564,15 +564,16 @@ async fn run_revalidate(
             );
             println!(
                 "Safe to apply:        {}",
-                if report.is_safe_to_apply() { "yes" } else { "no" }
+                if report.is_safe_to_apply() {
+                    "yes"
+                } else {
+                    "no"
+                }
             );
 
             if !report.items.is_empty() {
                 println!();
-                println!(
-                    "{:<12} {:<40} {:<22} DETAILS",
-                    "ID", "REPOSITORY", "STATE"
-                );
+                println!("{:<12} {:<40} {:<22} DETAILS", "ID", "REPOSITORY", "STATE");
                 for item in &report.items {
                     let details = match item.state {
                         RevalidationState::Unchanged => "exact snapshot match".to_owned(),
