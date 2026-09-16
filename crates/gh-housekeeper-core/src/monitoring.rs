@@ -170,11 +170,7 @@ where
     }
 }
 
-impl<E> std::error::Error for MonitoringIterationError<E>
-where
-    E: std::error::Error + 'static,
-{
-}
+impl<E> std::error::Error for MonitoringIterationError<E> where E: std::error::Error + 'static {}
 
 impl MonitoringService {
     pub fn new(provider: Arc<dyn ArtifactProvider>) -> Self {
