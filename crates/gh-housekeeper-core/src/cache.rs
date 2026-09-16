@@ -95,10 +95,7 @@ pub struct CacheStorageBucket {
     pub bytes: u64,
 }
 
-pub fn aggregate_caches<'a, I>(
-    caches: I,
-    group_by: CacheAggregationKey,
-) -> Vec<CacheStorageBucket>
+pub fn aggregate_caches<'a, I>(caches: I, group_by: CacheAggregationKey) -> Vec<CacheStorageBucket>
 where
     I: IntoIterator<Item = &'a ActionsCache>,
 {
