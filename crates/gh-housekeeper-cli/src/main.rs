@@ -865,8 +865,8 @@ fn authorize_apply(
 
 
 fn run_history(command: HistoryCommand) -> Result<()> {
-    let paths =
-        StatePaths::discover().context("failed to determine local gh-housekeeper state directory")?;
+    let paths = StatePaths::discover()
+        .context("failed to determine local gh-housekeeper state directory")?;
     let store = AuditStore::from_paths(&paths);
     let history = store
         .read_all()
@@ -978,7 +978,10 @@ fn print_audit_issues(issues: &[AuditReadIssue]) {
     }
 
     eprintln!();
-    eprintln!("Audit history contains {} unreadable record(s):", issues.len());
+    eprintln!(
+        "Audit history contains {} unreadable record(s):",
+        issues.len()
+    );
     for issue in issues {
         eprintln!("- {}: {}", issue.path.display(), issue.message);
     }
