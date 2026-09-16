@@ -26,7 +26,7 @@ The first end-to-end inventory slice is implemented:
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI now wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. No live destructive validation has been performed against valuable project artifacts. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
+Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. No live destructive validation has been performed against valuable project artifacts. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
 
 ## CLI
 
@@ -69,6 +69,14 @@ gh-housekeeper apply plan.json --yes
 
 # Machine-readable final execution output; pre-execution review remains on stderr.
 gh-housekeeper apply plan.json --yes --format json
+
+# Read local durable execution history. This does not contact GitHub.
+gh-housekeeper history
+
+gh-housekeeper history --format json
+
+# Select executions that touched a repository; matching is case-insensitive.
+gh-housekeeper history --repo example-user/project-alpha
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.
