@@ -1237,8 +1237,10 @@ mod tests {
             MonitoringService::new(provider.clone()),
             FakeSink::default(),
         );
-        let baseline =
+        let mut baseline =
             monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Healthy, 100);
+        baseline.account.provider = "example".to_owned();
+        baseline.account.login = "example-user".to_owned();
         let scheduler = MonitoringScheduler::new(
             runner,
             ScanOptions::default(),
