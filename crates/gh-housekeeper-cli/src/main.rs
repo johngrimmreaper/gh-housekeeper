@@ -236,7 +236,6 @@ struct HistoryCommand {
     format: OutputFormat,
 }
 
-
 #[derive(Args)]
 struct ConfigCommand {
     #[command(subcommand)]
@@ -302,10 +301,8 @@ fn build_provider(api_url: Option<&str>) -> Result<Arc<dyn ArtifactProvider>> {
     Ok(Arc::new(client))
 }
 
-
 fn run_config(command: ConfigCommand) -> Result<()> {
-    let paths =
-        StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
     let store = ConfigStore::from_paths(&paths);
 
     match command.action {
@@ -347,8 +344,7 @@ fn run_config(command: ConfigCommand) -> Result<()> {
 }
 
 async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand) -> Result<()> {
-    let paths =
-        StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
     let loaded = ConfigStore::from_paths(&paths)
         .load()
         .context("failed to load monitoring configuration")?;
@@ -1301,7 +1297,6 @@ mod tests {
         ));
         assert!(history_record_matches_repository(&record, None));
     }
-
 
     #[test]
     fn monitoring_pressure_labels_are_stable() {
