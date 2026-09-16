@@ -5,7 +5,8 @@ mod monitoring;
 mod revalidation;
 
 pub use cache::{
-    ActionsCache, CacheInventoryService, CacheInventorySnapshot, CacheProvider, CacheStorageBucket,
+    ActionsCache, CacheAggregationKey, CacheInventoryService, CacheInventorySnapshot, CacheProvider,
+    CacheStorageBucket, aggregate_caches,
 };
 pub use cleanup::{
     CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,

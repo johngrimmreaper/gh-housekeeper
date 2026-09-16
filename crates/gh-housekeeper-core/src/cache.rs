@@ -69,16 +69,23 @@ impl CacheInventorySnapshot {
     }
 
     pub fn aggregate_by_repository(&self) -> Vec<CacheStorageBucket> {
-        aggregate(&self.caches, |cache| cache.repository.full_name.clone())
+        aggregate_caches(self.caches.iter(), CacheAggregationKey::Repository)
     }
 
     pub fn aggregate_by_key(&self) -> Vec<CacheStorageBucket> {
-        aggregate(&self.caches, |cache| cache.key.clone())
+        aggregate_caches(self.caches.iter(), CacheAggregationKey::Key)
     }
 
     pub fn aggregate_by_ref(&self) -> Vec<CacheStorageBucket> {
-        aggregate(&self.caches, |cache| cache.git_ref.clone())
+        aggregate_caches(self.caches.iter(), CacheAggregationKey::Ref)
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheAggregationKey {
+    Repository,
+    Key,
+    Ref,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,13 +95,21 @@ pub struct CacheStorageBucket {
     pub bytes: u64,
 }
 
-fn aggregate<F>(caches: &[ActionsCache], key: F) -> Vec<CacheStorageBucket>
+pub fn aggregate_caches<'a, I>(
+    caches: I,
+    group_by: CacheAggregationKey,
+) -> Vec<CacheStorageBucket>
 where
-    F: Fn(&ActionsCache) -> String,
+    I: IntoIterator<Item = &'a ActionsCache>,
 {
     let mut buckets: BTreeMap<String, (usize, u64)> = BTreeMap::new();
     for cache in caches {
-        let entry = buckets.entry(key(cache)).or_default();
+        let key = match group_by {
+            CacheAggregationKey::Repository => cache.repository.full_name.clone(),
+            CacheAggregationKey::Key => cache.key.clone(),
+            CacheAggregationKey::Ref => cache.git_ref.clone(),
+        };
+        let entry = buckets.entry(key).or_default();
         entry.0 += 1;
         entry.1 += cache.size_in_bytes;
     }
@@ -315,5 +330,16 @@ mod tests {
         assert_eq!(buckets[0].key, "example-user/project-alpha");
         assert_eq!(buckets[0].cache_count, 2);
         assert_eq!(buckets[0].bytes, 500);
+
+        let filtered = snapshot
+            .caches
+            .iter()
+            .filter(|cache| cache.key == "build")
+            .collect::<Vec<_>>();
+        let key_buckets = aggregate_caches(filtered, CacheAggregationKey::Key);
+        assert_eq!(key_buckets.len(), 1);
+        assert_eq!(key_buckets[0].key, "build");
+        assert_eq!(key_buckets[0].cache_count, 2);
+        assert_eq!(key_buckets[0].bytes, 500);
     }
 }
