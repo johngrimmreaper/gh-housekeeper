@@ -1,3 +1,10 @@
+mod cleanup;
+
+pub use cleanup::{
+    CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,
+    PlanReason,
+};
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream};

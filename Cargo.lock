@@ -397,6 +397,7 @@ dependencies = [
  "clap",
  "gh-housekeeper-core",
  "gh-housekeeper-github",
+ "gh-housekeeper-policy",
  "serde_json",
  "tokio",
 ]

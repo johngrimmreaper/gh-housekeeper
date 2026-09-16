@@ -6,8 +6,9 @@ use gh_housekeeper_core::{
     format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
+use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
 use serde_json::json;
-use std::sync::Arc;
+use std::{fs, path::PathBuf, sync::Arc};
 
 #[derive(Parser)]
 #[command(
@@ -37,6 +38,8 @@ enum Command {
     Artifacts(ArtifactsCommand),
     /// Aggregate Actions artifact storage.
     Stats(StatsCommand),
+    /// Build an immutable dry-run cleanup plan without deleting anything.
+    Plan(PlanCommand),
 }
 
 #[derive(Args, Clone)]
@@ -152,6 +155,28 @@ struct StatsCommand {
     format: OutputFormat,
 }
 
+#[derive(Args)]
+struct PlanCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "TOML policy file; defaults to the built-in 30-day retention policy"
+    )]
+    policy: Option<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    #[arg(
+        long,
+        help = "Show every structured reason attached to each deletion target"
+    )]
+    explain: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -162,6 +187,7 @@ async fn main() -> Result<()> {
         Command::Repos(command) => run_repos(provider, command).await,
         Command::Artifacts(command) => run_artifacts(provider, command).await,
         Command::Stats(command) => run_stats(provider, command).await,
+        Command::Plan(command) => run_plan(provider, command).await,
     }
 }
 
@@ -394,6 +420,97 @@ async fn run_stats(provider: Arc<dyn ArtifactProvider>, command: StatsCommand) -
             print_scan_issues(&snapshot.issues);
         }
     }
+    Ok(())
+}
+
+async fn run_plan(provider: Arc<dyn ArtifactProvider>, command: PlanCommand) -> Result<()> {
+    let snapshot = InventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+
+    if !snapshot.issues.is_empty() {
+        print_scan_issues(&snapshot.issues);
+    }
+
+    let (policy_label, config) = match command.policy.as_ref() {
+        Some(path) => {
+            let input = fs::read_to_string(path)
+                .with_context(|| format!("failed to read policy file {}", path.display()))?;
+            let config = PolicyConfig::from_toml(&input)
+                .with_context(|| format!("invalid policy file {}", path.display()))?;
+            (path.display().to_string(), config)
+        }
+        None => ("built-in default".to_owned(), PolicyConfig::default()),
+    };
+
+    let engine = PolicyEngine::new(config)?;
+    let plan = engine
+        .build_cleanup_plan(&snapshot)
+        .context("failed to build safe cleanup plan")?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
+        OutputFormat::Table => {
+            let summary = plan.summary();
+            println!("Policy:              {policy_label}");
+            println!("Policy hash:         {}", plan.policy_hash());
+            println!("Plan schema:         {}", plan.schema_version());
+            println!("Artifacts scanned:   {}", summary.source_artifact_count());
+            println!(
+                "Current storage:     {}",
+                format_bytes(summary.source_total_bytes())
+            );
+            println!("Keep:                {}", summary.keep_count());
+            println!("Protected:           {}", summary.protected_count());
+            println!("Manual review:       {}", summary.manual_review_count());
+            println!("Delete:              {}", summary.delete_count());
+            println!(
+                "Potential recovery:  {}",
+                format_bytes(summary.reclaimable_bytes())
+            );
+
+            if plan.targets().is_empty() {
+                println!();
+                println!("No artifacts are eligible for deletion under this policy.");
+                return Ok(());
+            }
+
+            println!();
+            println!(
+                "{:<12} {:<40} {:<34} {:>12} REASON",
+                "ID", "REPOSITORY", "ARTIFACT", "SIZE"
+            );
+            for target in plan.targets() {
+                let artifact = target.artifact();
+                let primary_reason = target
+                    .reasons()
+                    .first()
+                    .map(|reason| reason.code())
+                    .unwrap_or("policy_delete");
+                println!(
+                    "{:<12} {:<40} {:<34} {:>12} {}",
+                    artifact.id,
+                    artifact.repository.full_name,
+                    artifact.name,
+                    format_bytes(artifact.size_in_bytes),
+                    primary_reason
+                );
+
+                if command.explain {
+                    for reason in target.reasons() {
+                        let rule = reason.rule_id().unwrap_or("<default>");
+                        println!(
+                            "  -> {} [rule: {}]: {}",
+                            reason.code(),
+                            rule,
+                            reason.explanation()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

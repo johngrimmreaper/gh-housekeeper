@@ -61,7 +61,9 @@ Bulk mutation will be deliberately throttled to reduce secondary-rate-limit risk
 
 ## Dry-run and confirmation
 
-Cleanup planning and dry-run are first-class product paths. Interactive deletion will require explicit confirmation. Automation will require a deliberate `--yes`; non-interactive stdout must never imply consent.
+Cleanup planning and dry-run are first-class product paths. The implemented planner refuses to produce a destructive plan when the inventory snapshot contains scan issues, and it freezes exact artifact snapshots rather than only names or filters.
+
+Interactive deletion will require explicit confirmation. Automation will require a deliberate `--yes`; non-interactive stdout must never imply consent.
 
 ## Explainability
 
