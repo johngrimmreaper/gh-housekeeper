@@ -8,7 +8,7 @@ use gh_housekeeper_core::{
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
-use gh_housekeeper_storage::{AuditStore, StatePaths};
+use gh_housekeeper_storage::{AuditReadIssue, AuditRecord, AuditStore, StatePaths};
 use serde_json::json;
 use std::{
     fs,
@@ -51,6 +51,8 @@ enum Command {
     Revalidate(RevalidateCommand),
     /// Apply an immutable cleanup plan through guarded revalidation, deletion, and audit.
     Apply(ApplyCommand),
+    /// Read durable local execution history without contacting GitHub.
+    History(HistoryCommand),
 }
 
 #[derive(Args, Clone)]
@@ -215,19 +217,33 @@ struct ApplyCommand {
     format: OutputFormat,
 }
 
+#[derive(Args)]
+struct HistoryCommand {
+    #[arg(
+        long = "repo",
+        value_name = "OWNER/REPO",
+        help = "Show executions that touched this repository"
+    )]
+    repository: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let provider = build_provider(cli.api_url.as_deref())?;
+    let Cli { api_url, command } = Cli::parse();
+    let provider = || build_provider(api_url.as_deref());
 
-    match cli.command {
-        Command::Scan(command) => run_scan(provider, command).await,
-        Command::Repos(command) => run_repos(provider, command).await,
-        Command::Artifacts(command) => run_artifacts(provider, command).await,
-        Command::Stats(command) => run_stats(provider, command).await,
-        Command::Plan(command) => run_plan(provider, command).await,
-        Command::Revalidate(command) => run_revalidate(provider, command).await,
-        Command::Apply(command) => run_apply(provider, command).await,
+    match command {
+        Command::Scan(command) => run_scan(provider()?, command).await,
+        Command::Repos(command) => run_repos(provider()?, command).await,
+        Command::Artifacts(command) => run_artifacts(provider()?, command).await,
+        Command::Stats(command) => run_stats(provider()?, command).await,
+        Command::Plan(command) => run_plan(provider()?, command).await,
+        Command::Revalidate(command) => run_revalidate(provider()?, command).await,
+        Command::Apply(command) => run_apply(provider()?, command).await,
+        Command::History(command) => run_history(command),
     }
 }
 
