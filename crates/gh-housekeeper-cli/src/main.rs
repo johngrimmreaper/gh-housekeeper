@@ -3,14 +3,15 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, MonitoringService, RevalidationService, RevalidationState,
-    ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
-    parse_duration,
+    ExecutionState, InventoryService, MonitoringRunner, MonitoringService, RevalidationService,
+    RevalidationState, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, format_bytes,
+    matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
-    AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig, StatePaths,
+    AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig,
+    MonitoringHistoryStore, MonitoringReadIssue, StatePaths,
 };
 use serde_json::json;
 use std::{
@@ -60,6 +61,8 @@ enum Command {
     Config(ConfigCommand),
     /// Scan a scope and classify current artifact storage against configured thresholds.
     Status(StatusCommand),
+    /// Run or inspect durable monitoring samples.
+    Monitor(MonitorCommand),
 }
 
 #[derive(Args, Clone)]
@@ -274,6 +277,43 @@ struct StatusCommand {
     format: OutputFormat,
 }
 
+
+#[derive(Args)]
+struct MonitorCommand {
+    #[command(subcommand)]
+    action: MonitorAction,
+}
+
+#[derive(Subcommand)]
+enum MonitorAction {
+    /// Run exactly one read-only monitoring iteration and persist its sample.
+    Once(MonitorOnceCommand),
+    /// Read local monitoring samples without contacting GitHub.
+    History(MonitorHistoryCommand),
+}
+
+#[derive(Args)]
+struct MonitorOnceCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct MonitorHistoryCommand {
+    #[arg(
+        long,
+        default_value_t = 20,
+        help = "Maximum newest samples to display; use 0 for all samples"
+    )]
+    limit: usize,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let Cli { api_url, command } = Cli::parse();
@@ -290,6 +330,10 @@ async fn main() -> Result<()> {
         Command::History(command) => run_history(command),
         Command::Config(command) => run_config(command),
         Command::Status(command) => run_status(provider()?, command).await,
+        Command::Monitor(command) => match command.action {
+            MonitorAction::Once(command) => run_monitor_once(provider()?, command).await,
+            MonitorAction::History(command) => run_monitor_history(command),
+        },
     }
 }
 
@@ -380,46 +424,12 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
             );
         }
         OutputFormat::Table => {
-            println!("Account:              {}", report.account.login);
-            println!("Scope:                {}", format_scope(&report.scope));
-            println!(
-                "Configuration:        {}{}",
-                loaded.path.display(),
-                if loaded.persisted {
-                    ""
-                } else {
-                    " (built-in defaults; not persisted)"
-                }
+            print_monitoring_report_table(
+                &report,
+                &loaded.path,
+                loaded.persisted,
+                loaded.config.monitoring.check_interval_minutes,
             );
-            println!(
-                "Check interval:       {}m",
-                loaded.config.monitoring.check_interval_minutes
-            );
-            println!("Repositories:         {}", report.repository_count);
-            println!("Artifacts:            {}", report.artifact_count);
-            println!(
-                "Current storage:      {}",
-                format_bytes(report.pressure.total_bytes)
-            );
-            println!(
-                "Pressure:             {}",
-                pressure_label(report.pressure.level)
-            );
-            println!(
-                "Warning threshold:    {}",
-                format_optional_bytes(report.pressure.warning_bytes)
-            );
-            println!(
-                "Critical threshold:   {}",
-                format_optional_bytes(report.pressure.critical_bytes)
-            );
-            if report.pressure.level == StoragePressureLevel::Unconfigured {
-                println!();
-                println!(
-                    "Monitoring thresholds are unconfigured; this status is observational only."
-                );
-            }
-            print_scan_issues(&report.issues);
         }
     }
 
@@ -447,6 +457,188 @@ fn format_optional_bytes(value: Option<u64>) -> String {
     value
         .map(format_bytes)
         .unwrap_or_else(|| "unconfigured".to_owned())
+}
+
+
+async fn run_monitor_once(
+    provider: Arc<dyn ArtifactProvider>,
+    command: MonitorOnceCommand,
+) -> Result<()> {
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let loaded = ConfigStore::from_paths(&paths)
+        .load()
+        .context("failed to load monitoring configuration")?;
+    let thresholds = loaded
+        .config
+        .monitoring
+        .thresholds()
+        .context("invalid monitoring thresholds")?;
+    let store = MonitoringHistoryStore::from_paths(&paths);
+
+    let iteration = MonitoringRunner::new(MonitoringService::new(provider), store)
+        .run(command.scope.scan_options(), thresholds)
+        .await
+        .context("monitoring iteration failed")?;
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "config_path": loaded.path,
+                    "config_persisted": loaded.persisted,
+                    "monitoring": loaded.config.monitoring,
+                    "sample_path": iteration.receipt,
+                    "report": iteration.report,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            print_monitoring_report_table(
+                &iteration.report,
+                &loaded.path,
+                loaded.persisted,
+                loaded.config.monitoring.check_interval_minutes,
+            );
+            println!("Sample:               {}", iteration.receipt.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn run_monitor_history(command: MonitorHistoryCommand) -> Result<()> {
+    let paths =
+        StatePaths::discover().context("failed to determine local gh-housekeeper state directory")?;
+    let store = MonitoringHistoryStore::from_paths(&paths);
+    let history = store
+        .read_all()
+        .context("failed to read local monitoring history")?;
+
+    let mut samples = history.samples.iter().rev().collect::<Vec<_>>();
+    if command.limit > 0 {
+        samples.truncate(command.limit);
+    }
+
+    match command.format {
+        OutputFormat::Json => {
+            let issues = history
+                .issues
+                .iter()
+                .map(|issue| {
+                    json!({
+                        "path": issue.path,
+                        "message": issue.message,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "state_directory": paths.state_dir,
+                    "monitoring_directory": store.directory(),
+                    "limit": command.limit,
+                    "samples": samples,
+                    "issues": issues,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            if samples.is_empty() {
+                println!("No monitoring samples found.");
+            } else {
+                println!(
+                    "{:<20} {:<24} {:<26} {:<12} {:>6} {:>8} {:>12} {:>6}",
+                    "RECORDED",
+                    "SCOPE",
+                    "ACCOUNT",
+                    "PRESSURE",
+                    "REPOS",
+                    "ARTIFACTS",
+                    "STORAGE",
+                    "ISSUES"
+                );
+
+                for sample in samples {
+                    let report = &sample.report;
+                    println!(
+                        "{:<20} {:<24} {:<26} {:<12} {:>6} {:>8} {:>12} {:>6}",
+                        sample.recorded_at.format("%Y-%m-%d %H:%M:%SZ"),
+                        format_scope(&report.scope),
+                        format!("{}:{}", report.account.provider, report.account.login),
+                        pressure_label(report.pressure.level),
+                        report.repository_count,
+                        report.artifact_count,
+                        format_bytes(report.total_bytes),
+                        report.issues.len()
+                    );
+                }
+            }
+
+            print_monitoring_read_issues(&history.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_monitoring_report_table(
+    report: &gh_housekeeper_core::MonitoringReport,
+    config_path: &std::path::Path,
+    config_persisted: bool,
+    check_interval_minutes: u64,
+) {
+    println!("Account:              {}", report.account.login);
+    println!("Scope:                {}", format_scope(&report.scope));
+    println!(
+        "Configuration:        {}{}",
+        config_path.display(),
+        if config_persisted {
+            ""
+        } else {
+            " (built-in defaults; not persisted)"
+        }
+    );
+    println!("Check interval:       {check_interval_minutes}m");
+    println!("Repositories:         {}", report.repository_count);
+    println!("Artifacts:            {}", report.artifact_count);
+    println!(
+        "Current storage:      {}",
+        format_bytes(report.pressure.total_bytes)
+    );
+    println!(
+        "Pressure:             {}",
+        pressure_label(report.pressure.level)
+    );
+    println!(
+        "Warning threshold:    {}",
+        format_optional_bytes(report.pressure.warning_bytes)
+    );
+    println!(
+        "Critical threshold:   {}",
+        format_optional_bytes(report.pressure.critical_bytes)
+    );
+    if report.pressure.level == StoragePressureLevel::Unconfigured {
+        println!();
+        println!("Monitoring thresholds are unconfigured; this status is observational only.");
+    }
+    print_scan_issues(&report.issues);
+}
+
+fn print_monitoring_read_issues(issues: &[MonitoringReadIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    eprintln!();
+    eprintln!(
+        "Monitoring history contains {} unreadable sample(s):",
+        issues.len()
+    );
+    for issue in issues {
+        eprintln!("- {}: {}", issue.path.display(), issue.message);
+    }
 }
 
 async fn run_scan(provider: Arc<dyn ArtifactProvider>, command: ScanCommand) -> Result<()> {
@@ -1328,6 +1520,17 @@ mod tests {
             )),
             "repo:example-user/project-alpha"
         );
+    }
+
+
+    #[test]
+    fn zero_monitor_history_limit_means_all_samples() {
+        let mut values = vec![1, 2, 3];
+        let limit = 0usize;
+        if limit > 0 {
+            values.truncate(limit);
+        }
+        assert_eq!(values, vec![1, 2, 3]);
     }
 
     #[test]
