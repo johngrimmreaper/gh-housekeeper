@@ -1,18 +1,21 @@
 # gh-housekeeper
 
-`gh-housekeeper` is a repository-agnostic GitHub Actions artifact inventory and housekeeping application written in Rust.
+`gh-housekeeper` is a repository-agnostic GitHub Actions housekeeping and storage-observability application written in Rust.
 
 The project is designed around a shared domain model and application layer that will be consumed by both a powerful CLI and a native Rust desktop GUI. Repository-specific behavior belongs in metadata and user policy, never in hard-coded source rules.
 
 ## Current implementation
 
-The first end-to-end inventory slice is implemented:
+The mature artifact housekeeping slice and the first read-only cache inventory slice are implemented:
 
 - GitHub authentication prefers `gh auth token`, with `GITHUB_TOKEN` as a fallback;
 - authenticated-account detection;
 - enumeration of repositories explicitly accessible to the account;
 - repository and owner scopes;
 - GitHub Actions artifact enumeration with pagination;
+- GitHub Actions cache enumeration with pagination through a separate strong cache domain type;
+- shared bounded repository/resource scanning used by artifact and cache inventory;
+- cache storage totals plus cache key, Git ref, creation-age, last-accessed/unused filtering and sorting;
 - bounded repository scanning concurrency;
 - metadata-only inventory (artifact archives are not downloaded);
 - storage totals and aggregation by repository, artifact name, branch, and workflow-run ID;
@@ -25,6 +28,8 @@ The first end-to-end inventory slice is implemented:
 - immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
+
+Cache support is intentionally read-only in this checkpoint. Artifact policy, immutable plans, revalidation, guarded deletion, and audit remain the destructive reference implementation; cache policy/planning/revalidation/deletion have not been enabled yet. Workflow-run and workflow-run-log inventory are later multi-resource slices.
 
 Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
@@ -46,6 +51,13 @@ gh-housekeeper artifacts --sort size
 gh-housekeeper artifacts --older-than 30d
 
 gh-housekeeper artifacts --name 'output-*'
+
+# Read-only Actions cache inventory; this does not delete caches.
+gh-housekeeper caches
+gh-housekeeper caches --repo example-user/project-alpha
+gh-housekeeper caches --key 'linux-*' --unused-for 7d
+gh-housekeeper caches --ref 'refs/heads/release-*' --older-than 14d
+gh-housekeeper caches --sort last-accessed --format json
 
 gh-housekeeper stats --group-by repo
 
@@ -112,7 +124,7 @@ gh-housekeeper monitor history --limit 50
 gh-housekeeper monitor history --limit 0 --format json
 ```
 
-All example owners, repositories, and artifact names in this project are fictional.
+All example owners, repositories, artifact names, and cache keys in this project are fictional.
 
 ## Authentication
 
@@ -153,7 +165,7 @@ See:
 Every meaningful development checkpoint is expected to pass:
 
 ```text
-cargo fmt --check
+cargo fmt --all --check
 cargo check --workspace
 cargo test --workspace
 cargo clippy --workspace --all-targets --all-features
@@ -170,7 +182,7 @@ Missing configuration is safe: gh-housekeeper uses an in-memory default with a 3
 
 `gh-housekeeper status` scans the scope selected by `--owner`/`--repo` (or all accessible repositories when no scope is supplied), sums artifact metadata for that scan, and classifies the result as `unconfigured`, `healthy`, `warning`, or `critical`.
 
-This is **scanned-scope artifact storage**, not a claim about GitHub billing, account quota, or every repository for which another owner may be charged.
+This is currently **scanned-scope artifact storage**. Cache bytes are exposed separately by `gh-housekeeper caches` and are not yet folded into monitoring pressure. Neither figure is a claim about GitHub billing, account quota, or every repository for which another owner may be charged.
 
 Monitoring orchestration now lives in the shared core as `MonitoringService`. CLI `status`, the future scheduler, tray agent, and GUI can consume the same `MonitoringReport` rather than reimplementing inventory + threshold logic.
 

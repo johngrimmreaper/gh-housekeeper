@@ -8,6 +8,8 @@ Artifact names have no intrinsic meaning. A string that resembles a build output
 
 ## Implemented policy slice
 
+The current policy engine is explicitly **artifact-only**. Cache inventory being present does not make cache entries eligible for artifact policy evaluation or deletion.
+
 The policy crate accepts TOML and currently supports:
 
 - default retention through `defaults.keep_days`;
@@ -72,9 +74,13 @@ Explicit protection outranks destructive retention rules. `keep_latest` then pro
 
 If multiple equally specific applicable retention rules request different values, the engine emits `ManualReview` instead of choosing a destructive result.
 
-## Planned dimensions
+## Planned multi-resource evolution
 
-Later policy slices may add generic dimensions such as:
+The next policy work should add resource-aware configuration only after cache requirements are represented by strong domain types. Cache retention needs `last_accessed_at` semantics (for example `keep_unused_days`) in addition to creation age. Workflow runs need selectors such as workflow, event, conclusion, and branch. Run logs remain a distinct cleanup operation from the run itself.
+
+A future syntax may separate defaults by resource kind and allow rules to identify their resource, but the current parser deliberately does not accept speculative cache/run policy syntax yet.
+
+Later policy slices may also add generic dimensions such as:
 
 - event;
 - pull-request state;

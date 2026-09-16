@@ -4,7 +4,7 @@
 
 ## No destructive pagination
 
-Never enumerate a paginated artifact collection while deleting from that same collection.
+Never enumerate a paginated mutable resource collection while deleting from that same collection.
 
 Deletion can shift page boundaries and silently skip later artifacts. The required design is:
 
@@ -49,15 +49,23 @@ The GitHub token wrapper deliberately redacts `Debug` output.
 
 Artifact archives are not downloaded for normal inventory, storage aggregation, policy classification, or deletion eligibility. GitHub metadata already exposes artifact ID, name, size, timestamps, expiration state, repository association, and workflow-run references.
 
+Actions-cache inventory is also metadata-only and currently read-only. It records cache ID, repository, key, version, Git ref, creation time, last-accessed time, and size. The current CLI has no cache DELETE path, and cache inventory state cannot authorize artifact deletion.
+
 ## Rate limits and retries
 
 The GitHub provider records request count and observed primary-rate-limit remainder.
 
 Read requests may use a finite retry budget for transient transport/server failures and rate-limit responses. Rate-limit delays honor `Retry-After` and primary reset metadata when present.
 
-Mutating requests do not receive an unbounded automatic retry loop. A destructive request with an uncertain outcome must be resolved through revalidation rather than blind repetition.
+Mutating requests do not receive an unbounded automatic retry loop. The current GitHub request policy gives non-GET requests a single attempt. A destructive request with an uncertain outcome must be resolved through revalidation rather than blind repetition.
 
 Bulk mutation will be deliberately throttled to reduce secondary-rate-limit risk.
+
+## Resource separation
+
+Artifacts and Actions caches are separate measurable storage categories. Cache bytes are not silently relabeled as artifact bytes, and current artifact monitoring does not claim to include caches. Workflow runs and run logs must use their own metrics when reliable byte usage is unavailable.
+
+Deleting a workflow run may remove artifacts associated with that run. Before run deletion is implemented, multi-resource cleanup planning must resolve dependencies so it neither double-deletes those artifacts nor double-counts their reclaimable bytes. Deleting run logs must remain a separate operation from deleting the run itself.
 
 ## Dry-run and confirmation
 
