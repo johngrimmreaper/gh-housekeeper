@@ -236,6 +236,24 @@ pub enum PressureTransitionEvaluation {
     },
 }
 
+
+pub fn monitoring_report_matches_scan_options(
+    report: &MonitoringReport,
+    options: &ScanOptions,
+) -> bool {
+    scopes_equal(&report.scope, &options.scope)
+        && normalized_exclusions(&report.exclude_repositories)
+            == normalized_exclusions(&options.exclude_repositories)
+}
+
+pub fn monitoring_report_matches_context(
+    report: &MonitoringReport,
+    account: &Account,
+    options: &ScanOptions,
+) -> bool {
+    same_account(&report.account, account) && monitoring_report_matches_scan_options(report, options)
+}
+
 pub fn evaluate_pressure_transition(
     previous: Option<&MonitoringReport>,
     current: &MonitoringReport,
@@ -280,9 +298,14 @@ fn same_account(left: &Account, right: &Account) -> bool {
 }
 
 fn same_scan_scope(left: &MonitoringReport, right: &MonitoringReport) -> bool {
-    scopes_equal(&left.scope, &right.scope)
-        && normalized_exclusions(&left.exclude_repositories)
-            == normalized_exclusions(&right.exclude_repositories)
+    monitoring_report_matches_scan_options(
+        left,
+        &ScanOptions {
+            scope: right.scope.clone(),
+            exclude_repositories: right.exclude_repositories.clone(),
+            concurrency: 1,
+        },
+    )
 }
 
 fn scopes_equal(left: &ScanScope, right: &ScanScope) -> bool {
@@ -306,6 +329,70 @@ fn normalized_exclusions(values: &[String]) -> Vec<String> {
     values
 }
 
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MonitoringNotificationSignal {
+    NoNotification,
+    EnteredWarning {
+        thresholds_changed: bool,
+    },
+    EnteredCritical {
+        thresholds_changed: bool,
+    },
+    RecoveredToWarning {
+        thresholds_changed: bool,
+    },
+    RecoveredToHealthy {
+        thresholds_changed: bool,
+    },
+    MonitoringIncomplete {
+        previous_issue_count: usize,
+        current_issue_count: usize,
+    },
+    MonitoringFailure {
+        consecutive_failures: u32,
+    },
+}
+
+pub fn notification_signal_for_transition(
+    evaluation: &PressureTransitionEvaluation,
+) -> MonitoringNotificationSignal {
+    match evaluation {
+        PressureTransitionEvaluation::IncompleteScan {
+            previous_issue_count,
+            current_issue_count,
+        } => MonitoringNotificationSignal::MonitoringIncomplete {
+            previous_issue_count: *previous_issue_count,
+            current_issue_count: *current_issue_count,
+        },
+        PressureTransitionEvaluation::Changed { transition } => match (transition.from, transition.to)
+        {
+            (_, StoragePressureLevel::Critical) => {
+                MonitoringNotificationSignal::EnteredCritical {
+                    thresholds_changed: transition.thresholds_changed,
+                }
+            }
+            (StoragePressureLevel::Critical, StoragePressureLevel::Warning) => {
+                MonitoringNotificationSignal::RecoveredToWarning {
+                    thresholds_changed: transition.thresholds_changed,
+                }
+            }
+            (
+                StoragePressureLevel::Warning | StoragePressureLevel::Critical,
+                StoragePressureLevel::Healthy,
+            ) => MonitoringNotificationSignal::RecoveredToHealthy {
+                thresholds_changed: transition.thresholds_changed,
+            },
+            (_, StoragePressureLevel::Warning) => MonitoringNotificationSignal::EnteredWarning {
+                thresholds_changed: transition.thresholds_changed,
+            },
+            _ => MonitoringNotificationSignal::NoNotification,
+        },
+        _ => MonitoringNotificationSignal::NoNotification,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitoringSchedulerStopReason {
@@ -325,11 +412,13 @@ pub enum MonitoringSchedulerEvent<R, E> {
     Iteration {
         iteration: MonitoringIteration<R>,
         transition: PressureTransitionEvaluation,
+        notification: MonitoringNotificationSignal,
     },
     Failure {
         error: MonitoringIterationError<E>,
         consecutive_failures: u32,
         retry_after: std::time::Duration,
+        notification: MonitoringNotificationSignal,
     },
 }
 
@@ -363,6 +452,7 @@ pub struct MonitoringScheduler<S> {
     thresholds: StorageThresholds,
     interval: std::time::Duration,
     failure_delay: std::time::Duration,
+    baseline: Option<MonitoringReport>,
 }
 
 impl<S> MonitoringScheduler<S>
@@ -389,7 +479,20 @@ where
             thresholds,
             interval,
             failure_delay,
+            baseline: None,
         })
+    }
+
+    pub fn with_baseline(
+        mut self,
+        baseline: MonitoringReport,
+    ) -> Result<Self, MonitoringSchedulerConfigError> {
+        if !monitoring_report_matches_scan_options(&baseline, &self.options) {
+            return Err(MonitoringSchedulerConfigError::IncompatibleBaselineScope);
+        }
+
+        self.baseline = Some(baseline);
+        Ok(self)
     }
 
     pub async fn run<F>(
@@ -405,7 +508,7 @@ where
         let mut successes = 0u64;
         let mut failures = 0u64;
         let mut consecutive_failures = 0u32;
-        let mut previous_report: Option<MonitoringReport> = None;
+        let mut previous_report = self.baseline.clone();
 
         loop {
             if *shutdown.receiver.borrow() {
@@ -457,9 +560,11 @@ where
                     let transition =
                         evaluate_pressure_transition(previous_report.as_ref(), &iteration.report);
                     previous_report = Some(iteration.report.clone());
+                    let notification = notification_signal_for_transition(&transition);
                     on_event(MonitoringSchedulerEvent::Iteration {
                         iteration,
                         transition,
+                        notification,
                     });
                     self.interval
                 }
@@ -470,6 +575,9 @@ where
                         error,
                         consecutive_failures,
                         retry_after: self.failure_delay,
+                        notification: MonitoringNotificationSignal::MonitoringFailure {
+                            consecutive_failures,
+                        },
                     });
                     self.failure_delay
                 }
@@ -509,6 +617,8 @@ pub enum MonitoringSchedulerConfigError {
     ZeroInterval,
     #[error("monitoring scheduler failure delay must be greater than zero")]
     ZeroFailureDelay,
+    #[error("monitoring scheduler baseline does not match the configured scan scope")]
+    IncompatibleBaselineScope,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -1020,6 +1130,185 @@ mod tests {
         );
         assert_eq!(provider.account_calls.load(Ordering::SeqCst), 0);
         assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+
+    #[test]
+    fn report_context_matching_includes_account_scope_and_exclusions() {
+        let mut report = monitoring_report(
+            ScanScope::Repository("Example-User/Project-Alpha".to_owned()),
+            StoragePressureLevel::Healthy,
+            100,
+        );
+        report.exclude_repositories = vec!["Example-User/Project-Beta".to_owned()];
+        let account = Account {
+            provider: "GITHUB".to_owned(),
+            login: "example-user".to_owned(),
+        };
+        let options = ScanOptions {
+            scope: ScanScope::Repository("example-user/project-alpha".to_owned()),
+            exclude_repositories: vec!["example-user/project-beta".to_owned()],
+            concurrency: 16,
+        };
+
+        assert!(monitoring_report_matches_context(&report, &account, &options));
+
+        let wrong_account = Account {
+            provider: "github".to_owned(),
+            login: "another-user".to_owned(),
+        };
+        assert!(!monitoring_report_matches_context(
+            &report,
+            &wrong_account,
+            &options
+        ));
+
+        let wrong_scope = ScanOptions {
+            scope: ScanScope::Repository("example-user/project-gamma".to_owned()),
+            ..options.clone()
+        };
+        assert!(!monitoring_report_matches_context(
+            &report,
+            &account,
+            &wrong_scope
+        ));
+    }
+
+    #[test]
+    fn notification_signals_cover_pressure_entry_recovery_and_incomplete_scan() {
+        let entered_warning = PressureTransitionEvaluation::Changed {
+            transition: PressureTransition {
+                from: StoragePressureLevel::Healthy,
+                to: StoragePressureLevel::Warning,
+                previous_total_bytes: 200,
+                current_total_bytes: 350,
+                thresholds_changed: false,
+            },
+        };
+        assert_eq!(
+            notification_signal_for_transition(&entered_warning),
+            MonitoringNotificationSignal::EnteredWarning {
+                thresholds_changed: false,
+            }
+        );
+
+        let recovered = PressureTransitionEvaluation::Changed {
+            transition: PressureTransition {
+                from: StoragePressureLevel::Critical,
+                to: StoragePressureLevel::Healthy,
+                previous_total_bytes: 500,
+                current_total_bytes: 100,
+                thresholds_changed: true,
+            },
+        };
+        assert_eq!(
+            notification_signal_for_transition(&recovered),
+            MonitoringNotificationSignal::RecoveredToHealthy {
+                thresholds_changed: true,
+            }
+        );
+
+        assert_eq!(
+            notification_signal_for_transition(&PressureTransitionEvaluation::IncompleteScan {
+                previous_issue_count: 0,
+                current_issue_count: 1,
+            }),
+            MonitoringNotificationSignal::MonitoringIncomplete {
+                previous_issue_count: 0,
+                current_issue_count: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_uses_compatible_restart_baseline() {
+        let repo = repository(1, "project-alpha");
+        let provider = Arc::new(FakeProvider::new(
+            vec![repo.clone()],
+            BTreeMap::from([(
+                repo.full_name.clone(),
+                FakeArtifacts::Items(vec![artifact(1, &repo, 350)]),
+            )]),
+        ));
+        let runner = MonitoringRunner::new(
+            MonitoringService::new(provider.clone()),
+            FakeSink::default(),
+        );
+        let baseline = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Healthy,
+            100,
+        );
+        let scheduler = MonitoringScheduler::new(
+            runner,
+            ScanOptions::default(),
+            StorageThresholds::new(Some(300), Some(400)).unwrap(),
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap()
+        .with_baseline(baseline)
+        .unwrap();
+        let (_cancellation, shutdown) = monitoring_scheduler_cancellation();
+        let mut transition = None;
+        let mut notification = None;
+
+        scheduler
+            .run(shutdown, Some(1), |event| {
+                if let MonitoringSchedulerEvent::Iteration {
+                    transition: value,
+                    notification: signal,
+                    ..
+                } = event
+                {
+                    transition = Some(value);
+                    notification = Some(signal);
+                }
+            })
+            .await;
+
+        assert!(matches!(
+            transition,
+            Some(PressureTransitionEvaluation::Changed { .. })
+        ));
+        assert_eq!(
+            notification,
+            Some(MonitoringNotificationSignal::EnteredWarning {
+                thresholds_changed: false,
+            })
+        );
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn scheduler_rejects_baseline_for_different_scope() {
+        let provider = Arc::new(FakeProvider::new(Vec::new(), BTreeMap::new()));
+        let runner = MonitoringRunner::new(
+            MonitoringService::new(provider),
+            FakeSink::default(),
+        );
+        let scheduler = MonitoringScheduler::new(
+            runner,
+            ScanOptions {
+                scope: ScanScope::Repository("example-user/project-alpha".to_owned()),
+                exclude_repositories: Vec::new(),
+                concurrency: 2,
+            },
+            StorageThresholds::default(),
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        let baseline = monitoring_report(
+            ScanScope::Repository("example-user/project-beta".to_owned()),
+            StoragePressureLevel::Healthy,
+            100,
+        );
+
+        assert!(matches!(
+            scheduler.with_baseline(baseline),
+            Err(MonitoringSchedulerConfigError::IncompatibleBaselineScope)
+        ));
     }
 
     #[test]

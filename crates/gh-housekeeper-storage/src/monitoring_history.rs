@@ -1,6 +1,8 @@
 use crate::StatePaths;
 use chrono::{DateTime, Utc};
-use gh_housekeeper_core::{MonitoringReport, MonitoringSampleSink};
+use gh_housekeeper_core::{
+    Account, MonitoringReport, MonitoringSampleSink, ScanOptions, monitoring_report_matches_context,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -55,6 +57,13 @@ pub struct MonitoringHistory {
     pub samples: Vec<MonitoringSample>,
     pub issues: Vec<MonitoringReadIssue>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MonitoringBaselineLookup {
+    pub sample: Option<MonitoringSample>,
+    pub issues: Vec<MonitoringReadIssue>,
+}
+
 
 pub struct MonitoringHistoryStore {
     directory: PathBuf,
@@ -157,6 +166,24 @@ impl MonitoringHistoryStore {
         }
 
         Ok(history)
+    }
+
+    pub fn latest_compatible(
+        &self,
+        account: &Account,
+        options: &ScanOptions,
+    ) -> Result<MonitoringBaselineLookup, MonitoringHistoryError> {
+        let history = self.read_all()?;
+        let sample = history
+            .samples
+            .into_iter()
+            .rev()
+            .find(|sample| monitoring_report_matches_context(&sample.report, account, options));
+
+        Ok(MonitoringBaselineLookup {
+            sample,
+            issues: history.issues,
+        })
     }
 
     fn write_sample(
@@ -380,6 +407,67 @@ mod tests {
                 .message
                 .contains("invalid or truncated monitoring sample")
         );
+
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+
+    #[test]
+    fn latest_compatible_selects_newest_matching_account_scope_and_exclusions() {
+        let state_dir = test_state_dir("baseline");
+        let store = MonitoringHistoryStore::new(&state_dir);
+
+        let mut matching_old = report(1, 100, StoragePressureLevel::Healthy);
+        matching_old.exclude_repositories = vec!["example-user/project-beta".to_owned()];
+        store.append(&matching_old).unwrap();
+
+        let mut wrong_account = report(2, 200, StoragePressureLevel::Healthy);
+        wrong_account.account.login = "another-user".to_owned();
+        wrong_account.exclude_repositories = vec!["example-user/project-beta".to_owned()];
+        store.append(&wrong_account).unwrap();
+
+        let mut matching_new = report(3, 300, StoragePressureLevel::Warning);
+        matching_new.exclude_repositories = vec!["EXAMPLE-USER/PROJECT-BETA".to_owned()];
+        store.append(&matching_new).unwrap();
+
+        let account = Account {
+            provider: "GITHUB".to_owned(),
+            login: "EXAMPLE-USER".to_owned(),
+        };
+        let options = ScanOptions {
+            scope: ScanScope::Repository("EXAMPLE-USER/PROJECT-ALPHA".to_owned()),
+            exclude_repositories: vec!["example-user/project-beta".to_owned()],
+            concurrency: 16,
+        };
+
+        let lookup = store.latest_compatible(&account, &options).unwrap();
+        assert!(lookup.issues.is_empty());
+        assert_eq!(lookup.sample.unwrap().report, matching_new);
+
+        fs::remove_dir_all(state_dir).unwrap();
+    }
+
+    #[test]
+    fn latest_compatible_preserves_read_issues() {
+        let state_dir = test_state_dir("baseline-issues");
+        let store = MonitoringHistoryStore::new(&state_dir);
+        let expected = report(1, 100, StoragePressureLevel::Healthy);
+        store.append(&expected).unwrap();
+        fs::write(store.directory().join("99999999999999999999-corrupt.json"), b"{").unwrap();
+
+        let lookup = store
+            .latest_compatible(
+                &expected.account,
+                &ScanOptions {
+                    scope: expected.scope.clone(),
+                    exclude_repositories: expected.exclude_repositories.clone(),
+                    concurrency: 2,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(lookup.sample.unwrap().report, expected);
+        assert_eq!(lookup.issues.len(), 1);
 
         fs::remove_dir_all(state_dir).unwrap();
     }
