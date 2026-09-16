@@ -3,9 +3,11 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, MonitoringRunner, MonitoringService, RevalidationService,
-    RevalidationState, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, format_bytes,
-    matches_glob, parse_duration,
+    ExecutionState, InventoryService, MonitoringRunner, MonitoringScheduler,
+    MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
+    PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
+    StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
+    monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
@@ -287,6 +289,8 @@ struct MonitorCommand {
 enum MonitorAction {
     /// Run exactly one read-only monitoring iteration and persist its sample.
     Once(MonitorOnceCommand),
+    /// Run foreground monitoring iterations until Ctrl-C or an optional attempt limit.
+    Watch(MonitorWatchCommand),
     /// Read local monitoring samples without contacting GitHub.
     History(MonitorHistoryCommand),
 }
@@ -295,6 +299,30 @@ enum MonitorAction {
 struct MonitorOnceCommand {
     #[command(flatten)]
     scope: ScopeArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+
+#[derive(Args)]
+struct MonitorWatchCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long,
+        value_name = "DURATION",
+        help = "Override the configured interval for this foreground run, for example 30s or 5m"
+    )]
+    interval: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Stop after this many attempts; 0 means run until Ctrl-C"
+    )]
+    iterations: u64,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
     format: OutputFormat,
@@ -331,6 +359,7 @@ async fn main() -> Result<()> {
         Command::Status(command) => run_status(provider()?, command).await,
         Command::Monitor(command) => match command.action {
             MonitorAction::Once(command) => run_monitor_once(provider()?, command).await,
+            MonitorAction::Watch(command) => run_monitor_watch(provider()?, command).await,
             MonitorAction::History(command) => run_monitor_history(command),
         },
     }
@@ -503,6 +532,210 @@ async fn run_monitor_once(
     }
 
     Ok(())
+}
+
+
+async fn run_monitor_watch(
+    provider: Arc<dyn ArtifactProvider>,
+    command: MonitorWatchCommand,
+) -> Result<()> {
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let loaded = ConfigStore::from_paths(&paths)
+        .load()
+        .context("failed to load monitoring configuration")?;
+    let thresholds = loaded
+        .config
+        .monitoring
+        .thresholds()
+        .context("invalid monitoring thresholds")?;
+
+    let interval = match command.interval.as_deref() {
+        Some(value) => parse_duration(value)
+            .with_context(|| format!("invalid monitoring interval {value:?}"))?,
+        None => {
+            let seconds = loaded
+                .config
+                .monitoring
+                .check_interval_minutes
+                .checked_mul(60)
+                .context("configured monitoring interval is too large")?;
+            std::time::Duration::from_secs(seconds)
+        }
+    };
+
+    let store = MonitoringHistoryStore::from_paths(&paths);
+    let runner = MonitoringRunner::new(MonitoringService::new(provider), store);
+    let scheduler = MonitoringScheduler::new(
+        runner,
+        command.scope.scan_options(),
+        thresholds,
+        interval,
+        interval,
+    )
+    .context("invalid monitoring scheduler configuration")?;
+
+    let (cancellation, shutdown) = monitoring_scheduler_cancellation();
+    let signal_cancellation = cancellation.clone();
+    let signal_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal_cancellation.cancel();
+        }
+    });
+
+    let max_attempts = (command.iterations > 0).then_some(command.iterations);
+
+    if matches!(command.format, OutputFormat::Table) {
+        println!("Foreground monitoring");
+        println!("Scope:                {}", format_scope(&command.scope.scope()));
+        println!("Interval:             {}s", interval.as_secs());
+        println!(
+            "Attempt limit:        {}",
+            max_attempts
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none (Ctrl-C to stop)".to_owned())
+        );
+        println!("Persistence:          {}", MonitoringHistoryStore::from_paths(&paths).directory().display());
+        println!();
+    }
+
+    let format = command.format;
+    let summary = scheduler
+        .run(shutdown, max_attempts, |event| {
+            print_monitoring_scheduler_event(format, event);
+        })
+        .await;
+    signal_task.abort();
+
+    print_monitoring_scheduler_summary(format, summary);
+    Ok(())
+}
+
+fn print_monitoring_scheduler_event(
+    format: OutputFormat,
+    event: MonitoringSchedulerEvent<
+        PathBuf,
+        gh_housekeeper_storage::MonitoringHistoryError,
+    >,
+) {
+    match (format, event) {
+        (
+            OutputFormat::Table,
+            MonitoringSchedulerEvent::Iteration {
+                iteration,
+                transition,
+            },
+        ) => {
+            println!(
+                "{}  {:<12} {:>12}  {:<28} {}",
+                iteration.report.scanned_at.format("%Y-%m-%d %H:%M:%SZ"),
+                pressure_label(iteration.report.pressure.level),
+                format_bytes(iteration.report.total_bytes),
+                transition_label(&transition),
+                iteration.receipt.display()
+            );
+        }
+        (
+            OutputFormat::Table,
+            MonitoringSchedulerEvent::Failure {
+                error,
+                consecutive_failures,
+                retry_after,
+            },
+        ) => {
+            eprintln!(
+                "monitoring failure #{consecutive_failures}: {error}; next attempt in {}s",
+                retry_after.as_secs()
+            );
+        }
+        (
+            OutputFormat::Json,
+            MonitoringSchedulerEvent::Iteration {
+                iteration,
+                transition,
+            },
+        ) => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "iteration",
+                    "report": iteration.report,
+                    "sample_path": iteration.receipt,
+                    "transition": transition,
+                }))
+                .expect("scheduler iteration JSON serialization should succeed")
+            );
+        }
+        (
+            OutputFormat::Json,
+            MonitoringSchedulerEvent::Failure {
+                error,
+                consecutive_failures,
+                retry_after,
+            },
+        ) => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "failure",
+                    "error": error.to_string(),
+                    "consecutive_failures": consecutive_failures,
+                    "retry_after_seconds": retry_after.as_secs(),
+                }))
+                .expect("scheduler failure JSON serialization should succeed")
+            );
+        }
+    }
+}
+
+fn print_monitoring_scheduler_summary(format: OutputFormat, summary: MonitoringSchedulerSummary) {
+    match format {
+        OutputFormat::Table => {
+            println!();
+            println!("Monitoring stopped");
+            println!("Attempts:             {}", summary.attempts);
+            println!("Successful samples:   {}", summary.successes);
+            println!("Failures:             {}", summary.failures);
+            println!("Reason:               {:?}", summary.stop_reason);
+        }
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "summary",
+                    "summary": summary,
+                }))
+                .expect("scheduler summary JSON serialization should succeed")
+            );
+        }
+    }
+}
+
+fn transition_label(evaluation: &PressureTransitionEvaluation) -> String {
+    match evaluation {
+        PressureTransitionEvaluation::FirstSample => "first_sample".to_owned(),
+        PressureTransitionEvaluation::IncompatibleAccount => "incompatible_account".to_owned(),
+        PressureTransitionEvaluation::IncompatibleScope => "incompatible_scope".to_owned(),
+        PressureTransitionEvaluation::IncompleteScan {
+            previous_issue_count,
+            current_issue_count,
+        } => format!("incomplete_scan:{previous_issue_count}->{current_issue_count}"),
+        PressureTransitionEvaluation::Stable { level } => {
+            format!("stable:{}", pressure_label(*level))
+        }
+        PressureTransitionEvaluation::Changed { transition } => {
+            let thresholds = if transition.thresholds_changed {
+                ";thresholds_changed"
+            } else {
+                ""
+            };
+            format!(
+                "{}->{}{}",
+                pressure_label(transition.from),
+                pressure_label(transition.to),
+                thresholds
+            )
+        }
+    }
 }
 
 fn run_monitor_history(command: MonitorHistoryCommand) -> Result<()> {
@@ -1528,6 +1761,33 @@ mod tests {
             values.truncate(limit);
         }
         assert_eq!(values, vec![1, 2, 3]);
+    }
+
+
+    #[test]
+    fn transition_labels_are_stable_for_foreground_output() {
+        assert_eq!(
+            transition_label(&PressureTransitionEvaluation::FirstSample),
+            "first_sample"
+        );
+        assert_eq!(
+            transition_label(&PressureTransitionEvaluation::Stable {
+                level: StoragePressureLevel::Healthy,
+            }),
+            "stable:healthy"
+        );
+        assert_eq!(
+            transition_label(&PressureTransitionEvaluation::Changed {
+                transition: gh_housekeeper_core::PressureTransition {
+                    from: StoragePressureLevel::Healthy,
+                    to: StoragePressureLevel::Warning,
+                    previous_total_bytes: 100,
+                    current_total_bytes: 300,
+                    thresholds_changed: false,
+                },
+            }),
+            "healthy->warning"
+        );
     }
 
     #[test]
