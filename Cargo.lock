@@ -412,6 +412,7 @@ dependencies = [
  "globset",
  "serde",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

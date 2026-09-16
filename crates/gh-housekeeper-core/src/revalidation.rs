@@ -299,8 +299,11 @@ mod tests {
 
         fn telemetry(&self) -> ProviderTelemetry {
             ProviderTelemetry {
-                api_requests: self.account_calls.load(Ordering::SeqCst)
-                    + self.lookup_calls.load(Ordering::SeqCst),
+                api_requests: u64::try_from(
+                    self.account_calls.load(Ordering::SeqCst)
+                        + self.lookup_calls.load(Ordering::SeqCst),
+                )
+                .unwrap_or(u64::MAX),
                 rate_limit_remaining: Some(4_999),
             }
         }
