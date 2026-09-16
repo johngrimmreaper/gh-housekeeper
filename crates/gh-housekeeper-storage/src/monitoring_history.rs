@@ -64,7 +64,6 @@ pub struct MonitoringBaselineLookup {
     pub issues: Vec<MonitoringReadIssue>,
 }
 
-
 pub struct MonitoringHistoryStore {
     directory: PathBuf,
 }
@@ -411,7 +410,6 @@ mod tests {
         fs::remove_dir_all(state_dir).unwrap();
     }
 
-
     #[test]
     fn latest_compatible_selects_newest_matching_account_scope_and_exclusions() {
         let state_dir = test_state_dir("baseline");
@@ -453,7 +451,11 @@ mod tests {
         let store = MonitoringHistoryStore::new(&state_dir);
         let expected = report(1, 100, StoragePressureLevel::Healthy);
         store.append(&expected).unwrap();
-        fs::write(store.directory().join("99999999999999999999-corrupt.json"), b"{").unwrap();
+        fs::write(
+            store.directory().join("99999999999999999999-corrupt.json"),
+            b"{",
+        )
+        .unwrap();
 
         let lookup = store
             .latest_compatible(
