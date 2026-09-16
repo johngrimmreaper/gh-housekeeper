@@ -363,6 +363,38 @@ impl CacheProvider for GithubClient {
 
         Ok(caches)
     }
+
+    async fn cache(
+        &self,
+        repository: &RepositoryRef,
+        cache_id: u64,
+    ) -> ProviderResult<Option<ActionsCache>> {
+        validate_full_name(&repository.full_name)?;
+        let mut page = 1usize;
+
+        loop {
+            let path = format!(
+                "/repos/{}/actions/caches?per_page={PER_PAGE}&page={page}",
+                repository.full_name
+            );
+            let response: GithubCachePage = self.get_json(&path).await?;
+            let item_count = response.actions_caches.len();
+            let total_count = response.total_count;
+
+            if let Some(cache) = response
+                .actions_caches
+                .into_iter()
+                .find(|cache| cache.id == cache_id)
+            {
+                return Ok(Some(cache.into_domain(repository.clone())));
+            }
+
+            if item_count == 0 || (page * PER_PAGE) as u64 >= total_count {
+                return Ok(None);
+            }
+            page += 1;
+        }
+    }
 }
 
 fn validate_full_name(full_name: &str) -> ProviderResult<()> {
@@ -611,6 +643,40 @@ mod tests {
         assert_eq!(caches[0].git_ref, "refs/heads/main");
         assert_eq!(caches[0].size_in_bytes, 1024);
         assert_eq!(caches[1].version, "version-b");
+        assert_eq!(client.telemetry().api_requests, 2);
+
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec![
+                "GET /repos/example-user/project-alpha/actions/caches?per_page=100&page=1 HTTP/1.1",
+                "GET /repos/example-user/project-alpha/actions/caches?per_page=100&page=2 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn finds_one_cache_by_exact_id_without_mutation() {
+        let page_one = r#"{"total_count":2,"actions_caches":[{"id":505,"ref":"refs/heads/main","key":"linux-build","version":"version-a","last_accessed_at":"2026-09-10T12:00:00Z","created_at":"2026-09-01T12:00:00Z","size_in_bytes":1024}]}"#.to_owned();
+        let page_two = r#"{"total_count":2,"actions_caches":[{"id":506,"ref":"refs/heads/main","key":"linux-build-extra","version":"version-b","last_accessed_at":"2026-09-11T12:00:00Z","created_at":"2026-09-02T12:00:00Z","size_in_bytes":2048}]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![page_one, page_two]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let repository = RepositoryRef {
+            id: 1,
+            full_name: "example-user/project-alpha".to_owned(),
+        };
+
+        let cache = CacheProvider::cache(&client, &repository, 506)
+            .await
+            .unwrap()
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(cache.id, 506);
+        assert_eq!(cache.key, "linux-build-extra");
+        assert_eq!(cache.repository, repository);
         assert_eq!(client.telemetry().api_requests, 2);
 
         let requests = requests.try_iter().collect::<Vec<_>>();
