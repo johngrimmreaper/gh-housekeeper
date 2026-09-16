@@ -91,6 +91,8 @@ pub struct StoragePressureReport {
 pub struct MonitoringReport {
     pub account: Account,
     pub scope: ScanScope,
+    #[serde(default)]
+    pub exclude_repositories: Vec<String>,
     pub scanned_at: DateTime<Utc>,
     pub elapsed_ms: u64,
     pub repository_count: usize,
@@ -182,6 +184,7 @@ impl MonitoringService {
         options: ScanOptions,
         thresholds: StorageThresholds,
     ) -> ProviderResult<MonitoringReport> {
+        let exclude_repositories = options.exclude_repositories.clone();
         let snapshot = InventoryService::new(Arc::clone(&self.provider))
             .scan(options)
             .await?;
@@ -192,6 +195,7 @@ impl MonitoringService {
         Ok(MonitoringReport {
             account: snapshot.account,
             scope: snapshot.scope,
+            exclude_repositories,
             scanned_at: snapshot.scanned_at,
             elapsed_ms: snapshot.elapsed_ms,
             repository_count,
@@ -202,6 +206,312 @@ impl MonitoringService {
             telemetry: snapshot.telemetry,
         })
     }
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PressureTransition {
+    pub from: StoragePressureLevel,
+    pub to: StoragePressureLevel,
+    pub previous_total_bytes: u64,
+    pub current_total_bytes: u64,
+    pub thresholds_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PressureTransitionEvaluation {
+    FirstSample,
+    IncompatibleAccount,
+    IncompatibleScope,
+    IncompleteScan {
+        previous_issue_count: usize,
+        current_issue_count: usize,
+    },
+    Stable {
+        level: StoragePressureLevel,
+    },
+    Changed {
+        transition: PressureTransition,
+    },
+}
+
+pub fn evaluate_pressure_transition(
+    previous: Option<&MonitoringReport>,
+    current: &MonitoringReport,
+) -> PressureTransitionEvaluation {
+    let Some(previous) = previous else {
+        return PressureTransitionEvaluation::FirstSample;
+    };
+
+    if !same_account(&previous.account, &current.account) {
+        return PressureTransitionEvaluation::IncompatibleAccount;
+    }
+    if !same_scan_scope(previous, current) {
+        return PressureTransitionEvaluation::IncompatibleScope;
+    }
+    if !previous.issues.is_empty() || !current.issues.is_empty() {
+        return PressureTransitionEvaluation::IncompleteScan {
+            previous_issue_count: previous.issues.len(),
+            current_issue_count: current.issues.len(),
+        };
+    }
+    if previous.pressure.level == current.pressure.level {
+        return PressureTransitionEvaluation::Stable {
+            level: current.pressure.level,
+        };
+    }
+
+    PressureTransitionEvaluation::Changed {
+        transition: PressureTransition {
+            from: previous.pressure.level,
+            to: current.pressure.level,
+            previous_total_bytes: previous.total_bytes,
+            current_total_bytes: current.total_bytes,
+            thresholds_changed: previous.pressure.warning_bytes != current.pressure.warning_bytes
+                || previous.pressure.critical_bytes != current.pressure.critical_bytes,
+        },
+    }
+}
+
+fn same_account(left: &Account, right: &Account) -> bool {
+    left.provider.eq_ignore_ascii_case(&right.provider)
+        && left.login.eq_ignore_ascii_case(&right.login)
+}
+
+fn same_scan_scope(left: &MonitoringReport, right: &MonitoringReport) -> bool {
+    scopes_equal(&left.scope, &right.scope)
+        && normalized_exclusions(&left.exclude_repositories)
+            == normalized_exclusions(&right.exclude_repositories)
+}
+
+fn scopes_equal(left: &ScanScope, right: &ScanScope) -> bool {
+    match (left, right) {
+        (ScanScope::AllAccessible, ScanScope::AllAccessible) => true,
+        (ScanScope::Owner(left), ScanScope::Owner(right))
+        | (ScanScope::Repository(left), ScanScope::Repository(right)) => {
+            left.eq_ignore_ascii_case(right)
+        }
+        _ => false,
+    }
+}
+
+fn normalized_exclusions(values: &[String]) -> Vec<String> {
+    let mut values = values
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitoringSchedulerStopReason {
+    Cancelled,
+    AttemptLimitReached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitoringSchedulerSummary {
+    pub attempts: u64,
+    pub successes: u64,
+    pub failures: u64,
+    pub stop_reason: MonitoringSchedulerStopReason,
+}
+
+pub enum MonitoringSchedulerEvent<R, E> {
+    Iteration {
+        iteration: MonitoringIteration<R>,
+        transition: PressureTransitionEvaluation,
+    },
+    Failure {
+        error: MonitoringIterationError<E>,
+        consecutive_failures: u32,
+        retry_after: std::time::Duration,
+    },
+}
+
+#[derive(Clone)]
+pub struct MonitoringSchedulerCancellation {
+    sender: tokio::sync::watch::Sender<bool>,
+}
+
+pub struct MonitoringSchedulerShutdown {
+    receiver: tokio::sync::watch::Receiver<bool>,
+}
+
+pub fn monitoring_scheduler_cancellation(
+) -> (MonitoringSchedulerCancellation, MonitoringSchedulerShutdown) {
+    let (sender, receiver) = tokio::sync::watch::channel(false);
+    (
+        MonitoringSchedulerCancellation { sender },
+        MonitoringSchedulerShutdown { receiver },
+    )
+}
+
+impl MonitoringSchedulerCancellation {
+    pub fn cancel(&self) {
+        let _ = self.sender.send(true);
+    }
+}
+
+pub struct MonitoringScheduler<S> {
+    runner: MonitoringRunner<S>,
+    options: ScanOptions,
+    thresholds: StorageThresholds,
+    interval: std::time::Duration,
+    failure_delay: std::time::Duration,
+}
+
+impl<S> MonitoringScheduler<S>
+where
+    S: MonitoringSampleSink,
+{
+    pub fn new(
+        runner: MonitoringRunner<S>,
+        options: ScanOptions,
+        thresholds: StorageThresholds,
+        interval: std::time::Duration,
+        failure_delay: std::time::Duration,
+    ) -> Result<Self, MonitoringSchedulerConfigError> {
+        if interval.is_zero() {
+            return Err(MonitoringSchedulerConfigError::ZeroInterval);
+        }
+        if failure_delay.is_zero() {
+            return Err(MonitoringSchedulerConfigError::ZeroFailureDelay);
+        }
+
+        Ok(Self {
+            runner,
+            options,
+            thresholds,
+            interval,
+            failure_delay,
+        })
+    }
+
+    pub async fn run<F>(
+        &self,
+        mut shutdown: MonitoringSchedulerShutdown,
+        max_attempts: Option<u64>,
+        mut on_event: F,
+    ) -> MonitoringSchedulerSummary
+    where
+        F: FnMut(MonitoringSchedulerEvent<S::Receipt, S::Error>),
+    {
+        let mut attempts = 0u64;
+        let mut successes = 0u64;
+        let mut failures = 0u64;
+        let mut consecutive_failures = 0u32;
+        let mut previous_report: Option<MonitoringReport> = None;
+
+        loop {
+            if *shutdown.receiver.borrow() {
+                return MonitoringSchedulerSummary {
+                    attempts,
+                    successes,
+                    failures,
+                    stop_reason: MonitoringSchedulerStopReason::Cancelled,
+                };
+            }
+
+            if max_attempts.is_some_and(|limit| attempts >= limit) {
+                return MonitoringSchedulerSummary {
+                    attempts,
+                    successes,
+                    failures,
+                    stop_reason: MonitoringSchedulerStopReason::AttemptLimitReached,
+                };
+            }
+
+            let run = self
+                .runner
+                .run(self.options.clone(), self.thresholds);
+            tokio::pin!(run);
+
+            let result = tokio::select! {
+                result = &mut run => Some(result),
+                changed = shutdown.receiver.changed() => {
+                    if changed.is_err() || *shutdown.receiver.borrow() {
+                        None
+                    } else {
+                        continue;
+                    }
+                }
+            };
+
+            let Some(result) = result else {
+                return MonitoringSchedulerSummary {
+                    attempts,
+                    successes,
+                    failures,
+                    stop_reason: MonitoringSchedulerStopReason::Cancelled,
+                };
+            };
+
+            attempts = attempts.saturating_add(1);
+            let delay = match result {
+                Ok(iteration) => {
+                    successes = successes.saturating_add(1);
+                    consecutive_failures = 0;
+                    let transition =
+                        evaluate_pressure_transition(previous_report.as_ref(), &iteration.report);
+                    previous_report = Some(iteration.report.clone());
+                    on_event(MonitoringSchedulerEvent::Iteration {
+                        iteration,
+                        transition,
+                    });
+                    self.interval
+                }
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    on_event(MonitoringSchedulerEvent::Failure {
+                        error,
+                        consecutive_failures,
+                        retry_after: self.failure_delay,
+                    });
+                    self.failure_delay
+                }
+            };
+
+            if max_attempts.is_some_and(|limit| attempts >= limit) {
+                return MonitoringSchedulerSummary {
+                    attempts,
+                    successes,
+                    failures,
+                    stop_reason: MonitoringSchedulerStopReason::AttemptLimitReached,
+                };
+            }
+
+            let sleep = tokio::time::sleep(delay);
+            tokio::pin!(sleep);
+            tokio::select! {
+                _ = &mut sleep => {}
+                changed = shutdown.receiver.changed() => {
+                    if changed.is_err() || *shutdown.receiver.borrow() {
+                        return MonitoringSchedulerSummary {
+                            attempts,
+                            successes,
+                            failures,
+                            stop_reason: MonitoringSchedulerStopReason::Cancelled,
+                        };
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum MonitoringSchedulerConfigError {
+    #[error("monitoring scheduler interval must be greater than zero")]
+    ZeroInterval,
+    #[error("monitoring scheduler failure delay must be greater than zero")]
+    ZeroFailureDelay,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -509,6 +819,222 @@ mod tests {
         assert_eq!(provider.repository_calls.load(Ordering::SeqCst), 1);
         assert_eq!(provider.artifact_list_calls.load(Ordering::SeqCst), 1);
         assert_eq!(provider.exact_lookup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+
+    fn monitoring_report(
+        scope: ScanScope,
+        level: StoragePressureLevel,
+        total_bytes: u64,
+    ) -> MonitoringReport {
+        MonitoringReport {
+            account: Account {
+                provider: "github".to_owned(),
+                login: "Example-User".to_owned(),
+            },
+            scope,
+            exclude_repositories: Vec::new(),
+            scanned_at: Utc::now(),
+            elapsed_ms: 10,
+            repository_count: 1,
+            artifact_count: 1,
+            total_bytes,
+            pressure: StoragePressureReport {
+                total_bytes,
+                warning_bytes: Some(300),
+                critical_bytes: Some(400),
+                bytes_until_warning: Some(300_u64.saturating_sub(total_bytes)),
+                bytes_until_critical: Some(400_u64.saturating_sub(total_bytes)),
+                level,
+            },
+            issues: Vec::new(),
+            telemetry: ProviderTelemetry::default(),
+        }
+    }
+
+    #[test]
+    fn pressure_transition_requires_compatible_account_and_scope() {
+        let previous = monitoring_report(
+            ScanScope::Repository("Example-User/Project-Alpha".to_owned()),
+            StoragePressureLevel::Healthy,
+            200,
+        );
+        let mut current = monitoring_report(
+            ScanScope::Repository("example-user/project-alpha".to_owned()),
+            StoragePressureLevel::Warning,
+            350,
+        );
+
+        assert!(matches!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::Changed { .. }
+        ));
+
+        current.account.login = "another-user".to_owned();
+        assert_eq!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::IncompatibleAccount
+        );
+
+        current.account.login = "example-user".to_owned();
+        current.scope = ScanScope::Repository("example-user/project-beta".to_owned());
+        assert_eq!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::IncompatibleScope
+        );
+    }
+
+    #[test]
+    fn pressure_transition_treats_exclusions_as_part_of_scope_compatibility() {
+        let mut previous = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Healthy,
+            200,
+        );
+        previous.exclude_repositories =
+            vec!["Example-User/Project-Beta".to_owned(), "example-user/project-gamma".to_owned()];
+
+        let mut current = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Warning,
+            350,
+        );
+        current.exclude_repositories =
+            vec!["EXAMPLE-USER/PROJECT-GAMMA".to_owned(), "example-user/project-beta".to_owned()];
+
+        assert!(matches!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::Changed { .. }
+        ));
+
+        current.exclude_repositories.push("example-user/project-delta".to_owned());
+        assert_eq!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::IncompatibleScope
+        );
+    }
+
+    #[test]
+    fn pressure_transition_refuses_partial_scans() {
+        let previous = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Warning,
+            350,
+        );
+        let mut current = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Healthy,
+            100,
+        );
+        current.issues.push(ScanIssue {
+            repository: Some("example-user/project-beta".to_owned()),
+            message: "fixture failure".to_owned(),
+        });
+
+        assert_eq!(
+            evaluate_pressure_transition(Some(&previous), &current),
+            PressureTransitionEvaluation::IncompleteScan {
+                previous_issue_count: 0,
+                current_issue_count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn pressure_transition_reports_threshold_changes() {
+        let previous = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Healthy,
+            250,
+        );
+        let mut current = monitoring_report(
+            ScanScope::AllAccessible,
+            StoragePressureLevel::Warning,
+            250,
+        );
+        current.pressure.warning_bytes = Some(200);
+
+        let evaluation = evaluate_pressure_transition(Some(&previous), &current);
+        let PressureTransitionEvaluation::Changed { transition } = evaluation else {
+            panic!("expected changed pressure transition");
+        };
+
+        assert!(transition.thresholds_changed);
+        assert_eq!(transition.previous_total_bytes, 250);
+        assert_eq!(transition.current_total_bytes, 250);
+    }
+
+    #[tokio::test]
+    async fn scheduler_runs_sequential_bounded_iterations() {
+        let repo = repository(1, "project-alpha");
+        let provider = Arc::new(FakeProvider::new(
+            vec![repo.clone()],
+            BTreeMap::from([(
+                repo.full_name.clone(),
+                FakeArtifacts::Items(vec![artifact(1, &repo, 100)]),
+            )]),
+        ));
+        let runner = MonitoringRunner::new(
+            MonitoringService::new(provider.clone()),
+            FakeSink::default(),
+        );
+        let scheduler = MonitoringScheduler::new(
+            runner,
+            ScanOptions::default(),
+            StorageThresholds::new(Some(300), Some(400)).unwrap(),
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap();
+        let (_cancellation, shutdown) = monitoring_scheduler_cancellation();
+        let mut events = 0usize;
+
+        let summary = scheduler
+            .run(shutdown, Some(2), |_| {
+                events += 1;
+            })
+            .await;
+
+        assert_eq!(summary.attempts, 2);
+        assert_eq!(summary.successes, 2);
+        assert_eq!(summary.failures, 0);
+        assert_eq!(
+            summary.stop_reason,
+            MonitoringSchedulerStopReason::AttemptLimitReached
+        );
+        assert_eq!(events, 2);
+        assert_eq!(provider.account_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.exact_lookup_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn scheduler_can_be_cancelled_before_first_iteration() {
+        let provider = Arc::new(FakeProvider::new(Vec::new(), BTreeMap::new()));
+        let runner = MonitoringRunner::new(
+            MonitoringService::new(provider.clone()),
+            FakeSink::default(),
+        );
+        let scheduler = MonitoringScheduler::new(
+            runner,
+            ScanOptions::default(),
+            StorageThresholds::default(),
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        let (cancellation, shutdown) = monitoring_scheduler_cancellation();
+        cancellation.cancel();
+
+        let summary = scheduler.run(shutdown, None, |_| {}).await;
+
+        assert_eq!(summary.attempts, 0);
+        assert_eq!(
+            summary.stop_reason,
+            MonitoringSchedulerStopReason::Cancelled
+        );
+        assert_eq!(provider.account_calls.load(Ordering::SeqCst), 0);
         assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
     }
 
