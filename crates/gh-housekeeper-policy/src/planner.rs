@@ -110,7 +110,7 @@ mod tests {
             scanned_at: Utc.with_ymd_and_hms(2026, 2, 15, 0, 0, 0).unwrap(),
             elapsed_ms: 1,
             repositories: Vec::new(),
-            artifacts: vec![artifact(1, 1), artifact(2, 14)],
+            artifacts: vec![artifact(1, 1), artifact(2, 20)],
             issues: Vec::new(),
             telemetry: ProviderTelemetry::default(),
         }
