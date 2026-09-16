@@ -81,10 +81,7 @@ impl PolicyEngine {
             });
 
             for cache in matching.into_iter().take(keep_latest) {
-                selected
-                    .entry(cache.id)
-                    .or_default()
-                    .push(rule.id.clone());
+                selected.entry(cache.id).or_default().push(rule.id.clone());
             }
         }
 
@@ -224,9 +221,8 @@ fn evaluate_cache_retention(
     defaults: bool,
     rule_ids: Vec<&str>,
 ) -> (bool, Vec<DecisionReason>) {
-    let created_expired = keep_days.is_none_or(|days| {
-        cache.age_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY)
-    });
+    let created_expired = keep_days
+        .is_none_or(|days| cache.age_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY));
     let unused_expired = keep_unused_days.is_none_or(|days| {
         cache.unused_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY)
     });
@@ -382,10 +378,12 @@ keep_unused_days = 7
         assert_eq!(report.decisions[0].decision, Decision::Keep);
         assert_eq!(report.decisions[1].decision, Decision::Delete);
         assert_eq!(report.reclaimable_bytes(), 200);
-        assert!(report.decisions[0]
-            .reasons
-            .iter()
-            .any(|reason| reason.code == ReasonCode::DefaultUnusedRetentionActive));
+        assert!(
+            report.decisions[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.code == ReasonCode::DefaultUnusedRetentionActive)
+        );
     }
 
     #[test]
@@ -450,10 +448,7 @@ keep_latest = 1
         assert_eq!(report.decisions[0].decision, Decision::Protected);
         assert_eq!(report.decisions[1].decision, Decision::Delete);
         assert_eq!(report.decisions[2].decision, Decision::Keep);
-        assert_eq!(
-            report.decisions[2].reasons[0].code,
-            ReasonCode::KeepLatest
-        );
+        assert_eq!(report.decisions[2].reasons[0].code, ReasonCode::KeepLatest);
     }
 
     #[test]

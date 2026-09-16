@@ -127,7 +127,9 @@ impl PolicyConfig {
 
             match rule.resource {
                 PolicyResource::Artifact => {
-                    if rule.key.is_some() || rule.git_ref.is_some() || rule.keep_unused_days.is_some()
+                    if rule.key.is_some()
+                        || rule.git_ref.is_some()
+                        || rule.keep_unused_days.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
                             "artifact policy rule {} cannot use cache-only key, ref, or keep_unused_days fields",
