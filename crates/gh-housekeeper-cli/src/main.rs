@@ -4,11 +4,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     ActionsCache, Artifact, ArtifactProvider, CacheInventoryService, CacheProvider, CleanupPlan,
     ExecutionAuthorization, ExecutionService, ExecutionState, InventoryService,
-    MonitoringNotificationSignal, MonitoringRunner,
-    MonitoringScheduler, MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
-    PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
-    StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
-    monitoring_scheduler_cancellation, parse_duration,
+    MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler, MonitoringSchedulerEvent,
+    MonitoringSchedulerSummary, MonitoringService, PressureTransitionEvaluation,
+    RevalidationService, RevalidationState, ScanOptions, ScanScope, StorageBucket,
+    StoragePressureLevel, format_bytes, matches_glob, monitoring_scheduler_cancellation,
+    parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
@@ -185,10 +185,16 @@ struct CachesCommand {
     #[arg(long, help = "Cache key glob, for example 'linux-*'")]
     key: Option<String>,
 
-    #[arg(long = "ref", help = "Git ref glob, for example 'refs/heads/release-*'")]
+    #[arg(
+        long = "ref",
+        help = "Git ref glob, for example 'refs/heads/release-*'"
+    )]
     reference: Option<String>,
 
-    #[arg(long, help = "Only caches created at least this long ago, for example 14d")]
+    #[arg(
+        long,
+        help = "Only caches created at least this long ago, for example 14d"
+    )]
     older_than: Option<String>,
 
     #[arg(
