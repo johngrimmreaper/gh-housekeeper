@@ -1,6 +1,4 @@
-use crate::{
-    Account, Artifact, ArtifactProvider, CleanupPlan, ProviderError, ProviderTelemetry,
-};
+use crate::{Account, Artifact, ArtifactProvider, CleanupPlan, ProviderError, ProviderTelemetry};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -340,7 +338,10 @@ mod tests {
     }
 
     fn plan(artifacts: Vec<Artifact>) -> CleanupPlan {
-        let total_bytes = artifacts.iter().map(|artifact| artifact.size_in_bytes).sum();
+        let total_bytes = artifacts
+            .iter()
+            .map(|artifact| artifact.size_in_bytes)
+            .sum();
         let snapshot = InventorySnapshot {
             account: account("example-user"),
             scope: ScanScope::AllAccessible,
@@ -369,15 +370,7 @@ mod tests {
             &snapshot,
             Utc.with_ymd_and_hms(2026, 2, 1, 0, 1, 0).unwrap(),
             "fnv1a64:0123456789abcdef",
-            CleanupPlanSummary::new(
-                count,
-                total_bytes,
-                0,
-                0,
-                0,
-                count,
-                total_bytes,
-            ),
+            CleanupPlanSummary::new(count, total_bytes, 0, 0, 0, count, total_bytes),
             targets,
         )
         .unwrap()
