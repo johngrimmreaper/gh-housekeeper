@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, MonitoringNotificationSignal, MonitoringRunner,
+    ActionsCache, Artifact, ArtifactProvider, CacheInventoryService, CacheProvider, CleanupPlan,
+    ExecutionAuthorization, ExecutionService, ExecutionState, InventoryService,
+    MonitoringNotificationSignal, MonitoringRunner,
     MonitoringScheduler, MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
     StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
@@ -27,7 +28,7 @@ use std::{
 #[command(
     name = "gh-housekeeper",
     version,
-    about = "Safe, explainable GitHub Actions artifact housekeeping"
+    about = "Safe, explainable GitHub Actions housekeeping and storage observability"
 )]
 struct Cli {
     #[arg(
@@ -49,6 +50,8 @@ enum Command {
     Repos(ReposCommand),
     /// List Actions artifacts with generic filters and sorting.
     Artifacts(ArtifactsCommand),
+    /// List Actions caches with generic filters, sorting, and storage totals.
+    Caches(CachesCommand),
     /// Aggregate Actions artifact storage.
     Stats(StatsCommand),
     /// Build an immutable dry-run cleanup plan without deleting anything.
@@ -157,6 +160,42 @@ struct ArtifactsCommand {
         help = "Only artifacts at least this old, for example 30d or 12h"
     )]
     older_than: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CacheSort {
+    Size,
+    Created,
+    LastAccessed,
+    Key,
+    Repository,
+}
+
+#[derive(Args)]
+struct CachesCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    #[arg(long, value_enum, default_value_t = CacheSort::Size)]
+    sort: CacheSort,
+
+    #[arg(long, help = "Cache key glob, for example 'linux-*'")]
+    key: Option<String>,
+
+    #[arg(long = "ref", help = "Git ref glob, for example 'refs/heads/release-*'")]
+    reference: Option<String>,
+
+    #[arg(long, help = "Only caches created at least this long ago, for example 14d")]
+    older_than: Option<String>,
+
+    #[arg(
+        long,
+        help = "Only caches not accessed for at least this long, for example 7d"
+    )]
+    unused_for: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -349,6 +388,7 @@ async fn main() -> Result<()> {
         Command::Scan(command) => run_scan(provider()?, command).await,
         Command::Repos(command) => run_repos(provider()?, command).await,
         Command::Artifacts(command) => run_artifacts(provider()?, command).await,
+        Command::Caches(command) => run_caches(provider()?, command).await,
         Command::Stats(command) => run_stats(provider()?, command).await,
         Command::Plan(command) => run_plan(provider()?, command).await,
         Command::Revalidate(command) => run_revalidate(provider()?, command).await,
@@ -364,7 +404,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn build_provider(api_url: Option<&str>) -> Result<Arc<dyn ArtifactProvider>> {
+fn build_provider(api_url: Option<&str>) -> Result<Arc<GithubClient>> {
     let token = SecretToken::discover()?;
     let client = match api_url {
         Some(api_url) => GithubClient::with_base_url(token, api_url)?,
@@ -1100,6 +1140,140 @@ async fn run_artifacts(
             print_scan_issues(&snapshot.issues);
         }
     }
+    Ok(())
+}
+
+async fn run_caches(provider: Arc<dyn CacheProvider>, command: CachesCommand) -> Result<()> {
+    let snapshot = CacheInventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+    let now = Utc::now();
+    let older_than = command
+        .older_than
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --older-than duration")?;
+    let unused_for = command
+        .unused_for
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --unused-for duration")?;
+
+    if let Some(pattern) = command.key.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid cache key glob: {pattern}"))?;
+    }
+    if let Some(pattern) = command.reference.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid cache ref glob: {pattern}"))?;
+    }
+
+    let mut caches: Vec<&ActionsCache> = snapshot
+        .caches
+        .iter()
+        .filter(|cache| {
+            command
+                .key
+                .as_deref()
+                .map(|pattern| matches_glob(pattern, &cache.key).unwrap_or(false))
+                .unwrap_or(true)
+        })
+        .filter(|cache| {
+            command
+                .reference
+                .as_deref()
+                .map(|pattern| matches_glob(pattern, &cache.git_ref).unwrap_or(false))
+                .unwrap_or(true)
+        })
+        .filter(|cache| {
+            older_than
+                .map(|duration| cache.older_than(now, duration))
+                .unwrap_or(true)
+        })
+        .filter(|cache| {
+            unused_for
+                .map(|duration| cache.unused_for(now, duration))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    match command.sort {
+        CacheSort::Size => caches.sort_by(|a, b| {
+            b.size_in_bytes
+                .cmp(&a.size_in_bytes)
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| a.key.cmp(&b.key))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        CacheSort::Created => caches.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        CacheSort::LastAccessed => caches.sort_by(|a, b| {
+            a.last_accessed_at
+                .cmp(&b.last_accessed_at)
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        CacheSort::Key => caches.sort_by(|a, b| {
+            a.key
+                .cmp(&b.key)
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        CacheSort::Repository => caches.sort_by(|a, b| {
+            a.repository
+                .full_name
+                .cmp(&b.repository.full_name)
+                .then_with(|| a.key.cmp(&b.key))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+    }
+
+    let filtered_bytes = caches.iter().map(|cache| cache.size_in_bytes).sum::<u64>();
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "account": snapshot.account,
+                    "scope": snapshot.scope,
+                    "scanned_at": snapshot.scanned_at,
+                    "cache_count": caches.len(),
+                    "total_bytes": filtered_bytes,
+                    "caches": caches,
+                    "issues": snapshot.issues,
+                    "telemetry": snapshot.telemetry,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!("Caches:  {}", caches.len());
+            println!("Storage: {}", format_bytes(filtered_bytes));
+            println!();
+            println!(
+                "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} REF",
+                "ID", "REPOSITORY", "KEY", "SIZE", "AGE", "UNUSED"
+            );
+            for cache in caches {
+                println!(
+                    "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} {}",
+                    cache.id,
+                    cache.repository.full_name,
+                    cache.key,
+                    format_bytes(cache.size_in_bytes),
+                    format_age(cache.age_seconds(now)),
+                    format_age(cache.unused_seconds(now)),
+                    cache.git_ref
+                );
+            }
+            print_scan_issues(&snapshot.issues);
+        }
+    }
+
     Ok(())
 }
 
