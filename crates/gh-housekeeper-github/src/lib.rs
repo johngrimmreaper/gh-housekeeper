@@ -572,7 +572,7 @@ mod tests {
                     .send(request.lines().next().unwrap_or_default().to_owned())
                     .unwrap();
                 let response = format!(
-                    "HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
