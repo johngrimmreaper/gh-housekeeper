@@ -12,7 +12,8 @@ pub use execution::{
     ExecutionReport, ExecutionService, ExecutionState,
 };
 pub use monitoring::{
-    MonitoringReport, MonitoringService, StoragePressureLevel, StoragePressureReport,
+    MonitoringIteration, MonitoringIterationError, MonitoringReport, MonitoringRunner,
+    MonitoringSampleSink, MonitoringService, StoragePressureLevel, StoragePressureReport,
     StorageThresholdError, StorageThresholds,
 };
 pub use revalidation::{
