@@ -26,7 +26,7 @@ The first end-to-end inventory slice is implemented:
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Remote revalidation, safe execution, audit persistence, scheduling/system-tray monitoring, and the native GUI are the next implementation slices.
+Remote revalidation of exact cleanup-plan targets is implemented. Safe execution, audit persistence, scheduling/system-tray monitoring, and the native GUI are the next implementation slices.
 
 ## CLI
 
@@ -56,6 +56,10 @@ gh-housekeeper plan
 gh-housekeeper plan --policy ~/.config/gh-housekeeper/policy.toml --explain
 
 gh-housekeeper plan --repo example-user/project-alpha --format json
+
+gh-housekeeper plan --repo example-user/project-alpha --format json > plan.json
+
+gh-housekeeper revalidate plan.json
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.

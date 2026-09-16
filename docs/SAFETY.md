@@ -63,6 +63,8 @@ Bulk mutation will be deliberately throttled to reduce secondary-rate-limit risk
 
 Cleanup planning and dry-run are first-class product paths. The implemented planner refuses to produce a destructive plan when the inventory snapshot contains scan issues, and it freezes exact artifact snapshots rather than only names or filters.
 
+Revalidation is also non-destructive. It verifies the current authenticated account matches the account recorded in the plan, performs exact target lookups only, and treats any metadata drift or lookup error as unsafe to apply.
+
 Interactive deletion will require explicit confirmation. Automation will require a deliberate `--yes`; non-interactive stdout must never imply consent.
 
 ## Explainability
