@@ -12,7 +12,8 @@ pub use execution::{
     ExecutionReport, ExecutionService, ExecutionState,
 };
 pub use monitoring::{
-    StoragePressureLevel, StoragePressureReport, StorageThresholdError, StorageThresholds,
+    MonitoringReport, MonitoringService, StoragePressureLevel, StoragePressureReport,
+    StorageThresholdError, StorageThresholds,
 };
 pub use revalidation::{
     ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
