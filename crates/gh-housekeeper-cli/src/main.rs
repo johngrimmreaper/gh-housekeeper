@@ -4,11 +4,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
     ExecutionState, InventoryService, RevalidationService, RevalidationState, ScanOptions,
-    ScanScope, StorageBucket, format_bytes, matches_glob, parse_duration,
+    ScanScope, StorageBucket, StoragePressureLevel, format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
-use gh_housekeeper_storage::{AuditReadIssue, AuditRecord, AuditStore, StatePaths};
+use gh_housekeeper_storage::{
+    AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig, StatePaths,
+};
 use serde_json::json;
 use std::{
     fs,
@@ -53,6 +55,10 @@ enum Command {
     Apply(ApplyCommand),
     /// Read durable local execution history without contacting GitHub.
     History(HistoryCommand),
+    /// Inspect or initialize persistent local configuration.
+    Config(ConfigCommand),
+    /// Scan a scope and classify current artifact storage against configured thresholds.
+    Status(StatusCommand),
 }
 
 #[derive(Args, Clone)]
@@ -230,6 +236,44 @@ struct HistoryCommand {
     format: OutputFormat,
 }
 
+
+#[derive(Args)]
+struct ConfigCommand {
+    #[command(subcommand)]
+    action: ConfigAction,
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Print the persistent configuration path.
+    Path,
+    /// Print the effective configuration as TOML.
+    Show,
+    /// Create a persistent configuration without overwriting an existing file.
+    Init(ConfigInitCommand),
+}
+
+#[derive(Args)]
+struct ConfigInitCommand {
+    #[arg(long, default_value_t = 30)]
+    check_interval_minutes: u64,
+
+    #[arg(long, value_name = "BYTES")]
+    warning_bytes: Option<u64>,
+
+    #[arg(long, value_name = "BYTES")]
+    critical_bytes: Option<u64>,
+}
+
+#[derive(Args)]
+struct StatusCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let Cli { api_url, command } = Cli::parse();
@@ -244,6 +288,8 @@ async fn main() -> Result<()> {
         Command::Revalidate(command) => run_revalidate(provider()?, command).await,
         Command::Apply(command) => run_apply(provider()?, command).await,
         Command::History(command) => run_history(command),
+        Command::Config(command) => run_config(command),
+        Command::Status(command) => run_status(provider()?, command).await,
     }
 }
 
@@ -254,6 +300,151 @@ fn build_provider(api_url: Option<&str>) -> Result<Arc<dyn ArtifactProvider>> {
         None => GithubClient::new(token)?,
     };
     Ok(Arc::new(client))
+}
+
+
+fn run_config(command: ConfigCommand) -> Result<()> {
+    let paths =
+        StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let store = ConfigStore::from_paths(&paths);
+
+    match command.action {
+        ConfigAction::Path => {
+            println!("{}", store.path().display());
+        }
+        ConfigAction::Show => {
+            let loaded = store.load().context("failed to load configuration")?;
+            if !loaded.persisted {
+                eprintln!(
+                    "No persisted configuration exists; showing safe built-in defaults for {}.",
+                    loaded.path.display()
+                );
+            }
+            print!("{}", toml::to_string_pretty(&loaded.config)?);
+        }
+        ConfigAction::Init(command) => {
+            let config = AppConfig {
+                monitoring: MonitoringConfig {
+                    check_interval_minutes: command.check_interval_minutes,
+                    warning_bytes: command.warning_bytes,
+                    critical_bytes: command.critical_bytes,
+                },
+                ..AppConfig::default()
+            };
+            let path = store
+                .initialize(&config)
+                .context("failed to initialize persistent configuration")?;
+            println!("Initialized configuration: {}", path.display());
+            if command.warning_bytes.is_none() && command.critical_bytes.is_none() {
+                println!(
+                    "Monitoring thresholds are unconfigured; set warning_bytes and/or critical_bytes before relying on pressure alerts."
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand) -> Result<()> {
+    let paths =
+        StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let loaded = ConfigStore::from_paths(&paths)
+        .load()
+        .context("failed to load monitoring configuration")?;
+    let thresholds = loaded
+        .config
+        .monitoring
+        .thresholds()
+        .context("invalid monitoring thresholds")?;
+
+    let snapshot = InventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+    let pressure = thresholds.evaluate(snapshot.total_bytes());
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "config_path": loaded.path,
+                    "config_persisted": loaded.persisted,
+                    "monitoring": loaded.config.monitoring,
+                    "account": snapshot.account,
+                    "scope": snapshot.scope,
+                    "scanned_at": snapshot.scanned_at,
+                    "artifact_count": snapshot.artifact_count(),
+                    "pressure": pressure,
+                    "issues": snapshot.issues,
+                    "telemetry": snapshot.telemetry,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!("Account:              {}", snapshot.account.login);
+            println!("Scope:                {}", format_scope(&snapshot.scope));
+            println!(
+                "Configuration:        {}{}",
+                loaded.path.display(),
+                if loaded.persisted {
+                    ""
+                } else {
+                    " (built-in defaults; not persisted)"
+                }
+            );
+            println!(
+                "Check interval:       {}m",
+                loaded.config.monitoring.check_interval_minutes
+            );
+            println!("Artifacts:            {}", snapshot.artifact_count());
+            println!(
+                "Current storage:      {}",
+                format_bytes(pressure.total_bytes)
+            );
+            println!("Pressure:             {}", pressure_label(pressure.level));
+            println!(
+                "Warning threshold:    {}",
+                format_optional_bytes(pressure.warning_bytes)
+            );
+            println!(
+                "Critical threshold:   {}",
+                format_optional_bytes(pressure.critical_bytes)
+            );
+            if pressure.level == StoragePressureLevel::Unconfigured {
+                println!();
+                println!(
+                    "Monitoring thresholds are unconfigured; this status is observational only."
+                );
+            }
+            print_scan_issues(&snapshot.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn format_scope(scope: &ScanScope) -> String {
+    match scope {
+        ScanScope::AllAccessible => "all-accessible".to_owned(),
+        ScanScope::Owner(owner) => format!("owner:{owner}"),
+        ScanScope::Repository(repository) => format!("repo:{repository}"),
+    }
+}
+
+fn pressure_label(level: StoragePressureLevel) -> &'static str {
+    match level {
+        StoragePressureLevel::Unconfigured => "unconfigured",
+        StoragePressureLevel::Healthy => "healthy",
+        StoragePressureLevel::Warning => "warning",
+        StoragePressureLevel::Critical => "critical",
+    }
+}
+
+fn format_optional_bytes(value: Option<u64>) -> String {
+    value
+        .map(format_bytes)
+        .unwrap_or_else(|| "unconfigured".to_owned())
 }
 
 async fn run_scan(provider: Arc<dyn ArtifactProvider>, command: ScanCommand) -> Result<()> {
@@ -1109,6 +1300,33 @@ mod tests {
             Some("example-user/project-beta")
         ));
         assert!(history_record_matches_repository(&record, None));
+    }
+
+
+    #[test]
+    fn monitoring_pressure_labels_are_stable() {
+        assert_eq!(
+            pressure_label(StoragePressureLevel::Unconfigured),
+            "unconfigured"
+        );
+        assert_eq!(pressure_label(StoragePressureLevel::Healthy), "healthy");
+        assert_eq!(pressure_label(StoragePressureLevel::Warning), "warning");
+        assert_eq!(pressure_label(StoragePressureLevel::Critical), "critical");
+    }
+
+    #[test]
+    fn scope_labels_are_repository_agnostic() {
+        assert_eq!(format_scope(&ScanScope::AllAccessible), "all-accessible");
+        assert_eq!(
+            format_scope(&ScanScope::Owner("example-user".to_owned())),
+            "owner:example-user"
+        );
+        assert_eq!(
+            format_scope(&ScanScope::Repository(
+                "example-user/project-alpha".to_owned()
+            )),
+            "repo:example-user/project-alpha"
+        );
     }
 
     #[test]

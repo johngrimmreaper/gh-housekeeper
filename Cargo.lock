@@ -401,6 +401,7 @@ dependencies = [
  "gh-housekeeper-storage",
  "serde_json",
  "tokio",
+ "toml",
 ]
 
 [[package]]
