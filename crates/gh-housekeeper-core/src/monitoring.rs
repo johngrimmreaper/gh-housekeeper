@@ -208,7 +208,6 @@ impl MonitoringService {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PressureTransition {
@@ -343,8 +342,8 @@ pub struct MonitoringSchedulerShutdown {
     receiver: tokio::sync::watch::Receiver<bool>,
 }
 
-pub fn monitoring_scheduler_cancellation(
-) -> (MonitoringSchedulerCancellation, MonitoringSchedulerShutdown) {
+pub fn monitoring_scheduler_cancellation()
+-> (MonitoringSchedulerCancellation, MonitoringSchedulerShutdown) {
     let (sender, receiver) = tokio::sync::watch::channel(false);
     (
         MonitoringSchedulerCancellation { sender },
@@ -427,9 +426,7 @@ where
                 };
             }
 
-            let run = self
-                .runner
-                .run(self.options.clone(), self.thresholds);
+            let run = self.runner.run(self.options.clone(), self.thresholds);
             tokio::pin!(run);
 
             let result = tokio::select! {
@@ -822,7 +819,6 @@ mod tests {
         assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
     }
 
-
     fn monitoring_report(
         scope: ScanScope,
         level: StoragePressureLevel,
@@ -887,28 +883,28 @@ mod tests {
 
     #[test]
     fn pressure_transition_treats_exclusions_as_part_of_scope_compatibility() {
-        let mut previous = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Healthy,
-            200,
-        );
-        previous.exclude_repositories =
-            vec!["Example-User/Project-Beta".to_owned(), "example-user/project-gamma".to_owned()];
+        let mut previous =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Healthy, 200);
+        previous.exclude_repositories = vec![
+            "Example-User/Project-Beta".to_owned(),
+            "example-user/project-gamma".to_owned(),
+        ];
 
-        let mut current = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Warning,
-            350,
-        );
-        current.exclude_repositories =
-            vec!["EXAMPLE-USER/PROJECT-GAMMA".to_owned(), "example-user/project-beta".to_owned()];
+        let mut current =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Warning, 350);
+        current.exclude_repositories = vec![
+            "EXAMPLE-USER/PROJECT-GAMMA".to_owned(),
+            "example-user/project-beta".to_owned(),
+        ];
 
         assert!(matches!(
             evaluate_pressure_transition(Some(&previous), &current),
             PressureTransitionEvaluation::Changed { .. }
         ));
 
-        current.exclude_repositories.push("example-user/project-delta".to_owned());
+        current
+            .exclude_repositories
+            .push("example-user/project-delta".to_owned());
         assert_eq!(
             evaluate_pressure_transition(Some(&previous), &current),
             PressureTransitionEvaluation::IncompatibleScope
@@ -917,16 +913,10 @@ mod tests {
 
     #[test]
     fn pressure_transition_refuses_partial_scans() {
-        let previous = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Warning,
-            350,
-        );
-        let mut current = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Healthy,
-            100,
-        );
+        let previous =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Warning, 350);
+        let mut current =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Healthy, 100);
         current.issues.push(ScanIssue {
             repository: Some("example-user/project-beta".to_owned()),
             message: "fixture failure".to_owned(),
@@ -943,16 +933,10 @@ mod tests {
 
     #[test]
     fn pressure_transition_reports_threshold_changes() {
-        let previous = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Healthy,
-            250,
-        );
-        let mut current = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Warning,
-            250,
-        );
+        let previous =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Healthy, 250);
+        let mut current =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Warning, 250);
         current.pressure.warning_bytes = Some(200);
 
         let evaluation = evaluate_pressure_transition(Some(&previous), &current);
