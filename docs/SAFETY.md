@@ -79,7 +79,9 @@ Persisted monitoring history is observational only. `MonitoringRunner` performs 
 
 The monitoring scheduler remains observational. It executes at most one read-only iteration at a time and waits after completion before the next attempt, so slow scans cannot overlap. Failures wait before retrying rather than spinning. Cancellation may stop the active read-only future; no destructive state is involved. The scheduler type has no policy, cleanup-plan, execution-authorization, executor, or DELETE dependency.
 
-Pressure-transition output is conservative: account/provider and effective scan scope must be compatible, repository exclusions are considered part of that scope, and any `ScanIssue` in either adjacent report blocks a transition claim. This prevents a partial inventory from appearing as a false recovery or pressure drop.
+Restart baselines are observational too. A persisted monitoring report can seed transition comparison only after provider/account identity, logical scope, and normalized exclusions match the current watch context. It cannot authorize cleanup, replace remote revalidation, or affect which artifact IDs may ever be deleted. Corrupt/truncated history remains a reported read issue rather than being silently trusted or silently discarded.
+
+Pressure-transition output is conservative: account/provider and effective scan scope must be compatible, repository exclusions are considered part of that scope, and any `ScanIssue` in either adjacent report blocks a transition claim. This prevents a partial inventory from appearing as a false recovery or pressure drop. Notification signals are derived only from this shared observational domain; they do not trigger cleanup or create execution authorization.
 
 The guarded CLI `apply` path now enforces the confirmation boundary. Interactive deletion requires stdin to be a terminal and requires the exact lowercase confirmation word `delete`. Non-interactive execution without `--yes` is refused. Automation requires a deliberate `--yes`, which creates the distinct automation authorization kind.
 
