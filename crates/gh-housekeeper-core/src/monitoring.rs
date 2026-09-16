@@ -119,14 +119,16 @@ impl MonitoringService {
             .scan(options)
             .await?;
         let total_bytes = snapshot.total_bytes();
+        let repository_count = snapshot.repositories.len();
+        let artifact_count = snapshot.artifact_count();
 
         Ok(MonitoringReport {
             account: snapshot.account,
             scope: snapshot.scope,
             scanned_at: snapshot.scanned_at,
             elapsed_ms: snapshot.elapsed_ms,
-            repository_count: snapshot.repositories.len(),
-            artifact_count: snapshot.artifact_count(),
+            repository_count,
+            artifact_count,
             total_bytes,
             pressure: thresholds.evaluate(total_bytes),
             issues: snapshot.issues,
