@@ -41,7 +41,7 @@ Declarative policy parsing and explainable classification. The first product def
 
 ### `gh-housekeeper-storage`
 
-Local configuration, cache, state, and audit persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store and versioned TOML application configuration. Missing configuration produces safe in-memory defaults with monitoring thresholds unconfigured; unknown fields and invalid threshold ordering are rejected. Each audit execution is written as its own immutable JSON record through a temporary file, `sync_all`, and rename before it becomes visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached, configuration-history, or audit state never substitutes for remote revalidation authority.
+Local configuration, cache, state, audit persistence, and monitoring-sample persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store, versioned monitoring history, and versioned TOML application configuration. Missing configuration produces safe in-memory defaults with monitoring thresholds unconfigured; unknown fields and invalid threshold ordering are rejected. Execution audit and monitoring samples use separate immutable per-record JSON files written through a temporary file, `sync_all`, and rename before they become visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached, configuration-history, audit, and monitoring-history state never substitutes for remote revalidation authority.
 
 ### `gh-housekeeper-cli`
 
@@ -84,6 +84,9 @@ The CLI now exposes this pipeline through guarded `apply` orchestration. The CLI
 The read-only `history` command is intentionally outside the provider path. It discovers the platform state directory, reads `AuditStore`, optionally selects execution records that touched an exact repository name with case-insensitive matching, and renders table or JSON output. Repository filtering selects whole immutable audit records; it does not rewrite their target lists or turn history into remote truth.
 
 Local `config path/show/init` commands are also outside the provider path. `status` is read-only and is now a thin presentation layer over shared `MonitoringService`. The service owns the orchestration of `InventoryService` plus explicit `StorageThresholds` and returns a serializable `MonitoringReport` containing account, scope, timestamps, repository/artifact counts, total bytes, pressure, scan issues, and provider telemetry. It deliberately does not infer billing ownership or an account quota from repository accessibility.
+
+
+Scheduler-ready monitoring uses dependency inversion rather than making core depend on storage. Core defines `MonitoringSampleSink` and `MonitoringRunner<S>`; `MonitoringHistoryStore` in the storage crate implements that sink. A runner iteration performs exactly one `MonitoringService::check`, persists exactly one report, and returns both the report and a sink-specific receipt. The CLI exposes this as `monitor once`. `monitor history` is local/read-only and never constructs a provider.
 
 Deletion follows this invariant:
 
