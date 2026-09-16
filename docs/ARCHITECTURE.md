@@ -12,11 +12,11 @@ No policy decision may depend on a hard-coded repository, owner, workflow, branc
 
 Provider-neutral domain types and shared application services:
 
-- account, repository, workflow-run reference, and artifact models;
-- scan scope and inventory snapshot;
-- `ArtifactProvider` abstraction;
-- bounded inventory scanning;
-- storage aggregation;
+- account, repository, workflow-run reference, artifact, and Actions-cache models;
+- scan scope plus resource-specific inventory snapshots;
+- small provider capabilities: shared `RepositoryProvider`, mature `ArtifactProvider`, and read-only `CacheProvider`;
+- a shared bounded repository/resource scan primitive used by artifact and cache inventory;
+- resource-specific storage aggregation;
 - generic byte, duration, and glob helpers.
 
 Immutable cleanup-plan, revalidation, guarded execution, and storage-pressure domain types live here because CLI, GUI, scheduler, and tray agent must use exactly the same behavior. Storage threshold evaluation is provider-neutral and uses only explicit absolute thresholds supplied by configuration.
@@ -29,7 +29,7 @@ GitHub-specific provider implementation:
 - REST request construction;
 - current GitHub API version/media headers;
 - GitHub response DTOs;
-- pagination;
+- artifact and Actions-cache pagination;
 - rate-limit telemetry and bounded retry behavior;
 - conversion to core domain types.
 
@@ -53,27 +53,32 @@ Native Rust presentation layer. It will call shared Rust application services di
 
 ## Inventory flow
 
+Repository discovery is a shared capability; resource enumeration remains strongly typed:
+
 ```text
 GitHub REST
     -> gh-housekeeper-github DTOs
-    -> ArtifactProvider
-    -> core Repository / Artifact
-    -> InventoryService
-    -> stable InventorySnapshot
-    -> aggregation / filters / policy
+    -> RepositoryProvider
+    -> shared bounded repository scan
+         |-> ArtifactProvider -> Artifact -> InventorySnapshot
+         `-> CacheProvider    -> ActionsCache -> CacheInventorySnapshot
 ```
 
-Basic inventory intentionally avoids expensive metadata enrichment. The artifact-list endpoint supplies repository-independent metadata sufficient for storage totals, age, expiration, branch/SHA references, and workflow-run IDs. Workflow names, PR state, release association, branch existence, and reachability are progressive enrichment dimensions rather than requirements for a basic scan.
+The existing `ArtifactProvider` still owns account/repository/telemetry methods for source compatibility with the mature artifact safety pipeline. A blanket adapter exposes those providers as `RepositoryProvider`; newer capabilities such as `CacheProvider` compose around the smaller shared repository capability rather than growing one monolithic trait. This is a transitional compatibility shape, not a requirement that future providers implement artifacts before other resources.
+
+Basic inventory intentionally avoids expensive metadata enrichment. Artifact inventory supplies storage totals, age, expiration, branch/SHA references, and workflow-run IDs. Cache inventory separately models key, version, Git ref, creation time, last-accessed time, and size. `last_accessed_at` is first-class because cache retention needs semantics different from artifact age.
+
+Inventory stays progressive: an artifact command does not enumerate caches, and the cache command does not enumerate artifacts. Workflow-run inventory will follow the same rule.
 
 ## Concurrency
 
-Repository artifact scans use bounded concurrency. The core clamps requested concurrency to a finite range. Provider code separately applies retry/rate-limit behavior.
+Repository resource scans use a shared bounded-concurrency primitive. The core clamps requested concurrency to a finite range. Provider code separately applies retry/rate-limit behavior. Artifact and cache commands request only the resource family they need.
 
 Mutation-heavy work will be more conservative than reads: destructive execution is expected to be serialized or deliberately throttled, and mutating REST requests must not have unbounded automatic retries.
 
 ## Stable cleanup plan architecture
 
-The immutable cleanup-plan slice is implemented. A plan contains the complete artifact snapshot for every exact deletion target, a policy fingerprint, decision totals, and projected reclaimable bytes. Plan construction refuses incomplete inventory snapshots.
+The immutable cleanup-plan slice is implemented for **artifacts**. A plan contains the complete artifact snapshot for every exact deletion target, a policy fingerprint, decision totals, and projected reclaimable bytes. Plan construction refuses incomplete inventory snapshots.
 
 Remote revalidation is now implemented as a shared core service. It verifies the authenticated account first, then performs one exact artifact lookup per cleanup target without rescanning repositories or artifact collections. Exact matches are `Unchanged`; missing targets are `AlreadyAbsent`; any metadata drift is `Changed`; provider lookup failures are `RevalidationFailed`. No deletion occurs during revalidation.
 
@@ -97,7 +102,11 @@ Pressure changes are derived in core through `evaluate_pressure_transition`. Tra
 
 `MonitoringNotificationSignal` is a provider-neutral output derived from those transition evaluations and scheduler failures. It distinguishes no notification, entering warning/critical pressure, recovering to warning/healthy, incomplete monitoring, and monitoring failure. Scheduler events carry both the detailed transition and the notification signal so future CLI, tray, GUI, or OS notification adapters can share exactly the same classification.
 
-Deletion follows this invariant:
+Cache inventory is read-only at this checkpoint. Cache policy, cleanup targets, exact revalidation, mutation, and audit must reuse the same safety shape before any cache DELETE is exposed. Workflow runs and run logs require distinct operations because deleting a run can also remove associated artifacts, while deleting logs may preserve the historical run.
+
+Before multi-resource destructive planning, dependency resolution must sit between classification and plan construction so a planned workflow-run deletion cannot double-count or redundantly delete artifacts already removed by that run. Storage estimates must keep artifact bytes and cache bytes separate; run/log counts must not be invented as byte usage when GitHub does not expose reliable bytes.
+
+Deletion follows this artifact-reference invariant:
 
 ```text
 SCAN
@@ -111,6 +120,12 @@ SCAN
 ```
 
 Enumeration and deletion are separate phases. Deleting a target can never determine what the next target is.
+
+## Multi-resource direction
+
+The next backend milestones are cache policy/planning/revalidation/deletion, then workflow-run inventory and workflow-run-log operations. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
+
+Monitoring is still artifact-only in the current schema. Once cache housekeeping is structurally integrated, monitoring can evolve to expose artifact count/bytes and cache count/bytes as separate categories plus a clearly-defined observable-storage total. Run/log metrics remain separate unless a trustworthy byte measurement is available.
 
 ## Future provider support
 
