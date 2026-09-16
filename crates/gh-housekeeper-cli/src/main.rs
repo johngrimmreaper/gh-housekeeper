@@ -1066,4 +1066,60 @@ mod tests {
         assert!(authorize_apply(false, true, Some("DELETE\n")).is_err());
         assert!(authorize_apply(false, true, Some("\n")).is_err());
     }
+
+    #[test]
+    fn history_repository_filter_is_case_insensitive() {
+        let record = AuditRecord {
+            schema_version: gh_housekeeper_storage::AUDIT_SCHEMA_VERSION,
+            recorded_at: Utc::now(),
+            execution: gh_housekeeper_core::ExecutionReport {
+                started_at: Utc::now(),
+                completed_at: Utc::now(),
+                account: gh_housekeeper_core::Account {
+                    provider: "github".to_owned(),
+                    login: "example-user".to_owned(),
+                },
+                plan_created_at: Utc::now(),
+                plan_scanned_at: Utc::now(),
+                policy_hash: "fnv1a64:test".to_owned(),
+                authorization:
+                    gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation,
+                telemetry: gh_housekeeper_core::ProviderTelemetry::default(),
+                items: vec![gh_housekeeper_core::ExecutionItem {
+                    artifact_id: 1,
+                    repository: "Example-User/Project-Alpha".to_owned(),
+                    artifact_name: "artifact-1".to_owned(),
+                    planned_size_in_bytes: 100,
+                    state: ExecutionState::Deleted,
+                    changed_fields: Vec::new(),
+                    current: None,
+                    error: None,
+                }],
+            },
+        };
+
+        assert!(history_record_matches_repository(
+            &record,
+            Some("example-user/project-alpha")
+        ));
+        assert!(!history_record_matches_repository(
+            &record,
+            Some("example-user/project-beta")
+        ));
+        assert!(history_record_matches_repository(&record, None));
+    }
+
+    #[test]
+    fn authorization_labels_are_stable_for_history_output() {
+        assert_eq!(
+            format_authorization(
+                gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation
+            ),
+            "interactive"
+        );
+        assert_eq!(
+            format_authorization(gh_housekeeper_core::ExecutionAuthorizationKind::AutomationYes),
+            "automation"
+        );
+    }
 }
