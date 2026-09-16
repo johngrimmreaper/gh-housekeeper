@@ -37,6 +37,26 @@ impl PolicyConfig {
         Ok(config)
     }
 
+    pub fn fingerprint(&self) -> String {
+        let mut hash = 0xcbf29ce484222325_u64;
+        hash_bytes(&mut hash, b"gh-housekeeper-policy-v1");
+        hash_u64(&mut hash, self.defaults.keep_days);
+
+        for rule in &self.rules {
+            hash_bytes(&mut hash, b"rule");
+            hash_optional_str(&mut hash, 1, Some(&rule.id));
+            hash_optional_str(&mut hash, 2, rule.repository.as_deref());
+            hash_optional_str(&mut hash, 3, rule.workflow.as_deref());
+            hash_optional_str(&mut hash, 4, rule.artifact.as_deref());
+            hash_optional_str(&mut hash, 5, rule.branch.as_deref());
+            hash_optional_u64(&mut hash, 6, rule.keep_days);
+            hash_optional_u64(&mut hash, 7, rule.keep_latest.map(|value| value as u64));
+            hash_optional_bool(&mut hash, 8, rule.protect);
+        }
+
+        format!("fnv1a64:{hash:016x}")
+    }
+
     pub fn validate(&self) -> Result<(), PolicyError> {
         let mut ids = HashSet::new();
 
@@ -124,6 +144,48 @@ impl PolicyRule {
         ]
         .into_iter()
         .filter_map(|(dimension, pattern)| pattern.map(|pattern| (dimension, pattern)))
+    }
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+}
+
+fn hash_u64(hash: &mut u64, value: u64) {
+    hash_bytes(hash, &value.to_le_bytes());
+}
+
+fn hash_optional_str(hash: &mut u64, tag: u8, value: Option<&str>) {
+    hash_bytes(hash, &[tag]);
+    match value {
+        Some(value) => {
+            hash_bytes(hash, &[1]);
+            hash_u64(hash, value.len() as u64);
+            hash_bytes(hash, value.as_bytes());
+        }
+        None => hash_bytes(hash, &[0]),
+    }
+}
+
+fn hash_optional_u64(hash: &mut u64, tag: u8, value: Option<u64>) {
+    hash_bytes(hash, &[tag]);
+    match value {
+        Some(value) => {
+            hash_bytes(hash, &[1]);
+            hash_u64(hash, value);
+        }
+        None => hash_bytes(hash, &[0]),
+    }
+}
+
+fn hash_optional_bool(hash: &mut u64, tag: u8, value: Option<bool>) {
+    hash_bytes(hash, &[tag]);
+    match value {
+        Some(value) => hash_bytes(hash, &[1, u8::from(value)]),
+        None => hash_bytes(hash, &[0]),
     }
 }
 
@@ -225,6 +287,50 @@ keep_dayz = 30
         .unwrap_err();
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_sensitive_to_policy_changes() {
+        let first = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+        let same = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+        let changed = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 8
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(first.fingerprint(), same.fingerprint());
+        assert_ne!(first.fingerprint(), changed.fingerprint());
+        assert!(first.fingerprint().starts_with("fnv1a64:"));
     }
 
     #[test]

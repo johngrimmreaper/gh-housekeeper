@@ -20,10 +20,13 @@ The first end-to-end inventory slice is implemented:
 - artifact glob filtering, age filtering, and sorting;
 - provider telemetry for API request count and remaining primary rate limit when known;
 - per-repository scan issues instead of discarding an otherwise useful inventory;
-- a 30-day ordinary-retention product default in the policy crate;
+- a declarative TOML policy engine with explainable keep/delete/protected/manual-review decisions;
+- generic repository/workflow/artifact/branch glob rules, explicit protection, and `keep_latest`;
+- immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
+- a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Policy classification, immutable cleanup plans, revalidation, audit persistence, and the native GUI are the next implementation slices.
+Remote revalidation, safe execution, audit persistence, scheduling/system-tray monitoring, and the native GUI are the next implementation slices.
 
 ## CLI
 
@@ -47,6 +50,12 @@ gh-housekeeper artifacts --name 'output-*'
 gh-housekeeper stats --group-by repo
 
 gh-housekeeper stats --group-by name --format json
+
+gh-housekeeper plan
+
+gh-housekeeper plan --policy ~/.config/gh-housekeeper/policy.toml --explain
+
+gh-housekeeper plan --repo example-user/project-alpha --format json
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.

@@ -19,7 +19,7 @@ Provider-neutral domain types and shared application services:
 - storage aggregation;
 - generic byte, duration, and glob helpers.
 
-Future cleanup-plan, revalidation, and shared deletion-executor types also belong here because CLI and GUI must use exactly the same behavior.
+Immutable cleanup-plan domain types now live here because CLI and GUI must use exactly the same behavior. Future revalidation and shared deletion-executor types belong here as well.
 
 ### `gh-housekeeper-github`
 
@@ -73,7 +73,9 @@ Mutation-heavy work will be more conservative than reads: destructive execution 
 
 ## Stable cleanup plan architecture
 
-Deletion will follow this invariant:
+The immutable cleanup-plan slice is implemented. A plan contains the complete artifact snapshot for every exact deletion target, a policy fingerprint, decision totals, and projected reclaimable bytes. Plan construction refuses incomplete inventory snapshots.
+
+Deletion will continue to follow this invariant:
 
 ```text
 SCAN

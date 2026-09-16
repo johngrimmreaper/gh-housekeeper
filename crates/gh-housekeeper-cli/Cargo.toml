@@ -15,5 +15,6 @@ chrono.workspace = true
 clap.workspace = true
 gh-housekeeper-core = { path = "../gh-housekeeper-core" }
 gh-housekeeper-github = { path = "../gh-housekeeper-github" }
+gh-housekeeper-policy = { path = "../gh-housekeeper-policy" }
 serde_json.workspace = true
 tokio.workspace = true

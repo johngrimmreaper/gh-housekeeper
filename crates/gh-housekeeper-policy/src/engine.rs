@@ -26,6 +26,20 @@ pub enum ReasonCode {
     ConflictingRetentionRules,
 }
 
+impl ReasonCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultRetentionActive => "default_retention_active",
+            Self::DefaultRetentionExpired => "default_retention_expired",
+            Self::RuleRetentionActive => "rule_retention_active",
+            Self::RuleRetentionExpired => "rule_retention_expired",
+            Self::ExplicitProtection => "explicit_protection",
+            Self::KeepLatest => "keep_latest",
+            Self::ConflictingRetentionRules => "conflicting_retention_rules",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionReason {
     pub code: ReasonCode,
