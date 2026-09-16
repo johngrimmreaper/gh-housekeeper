@@ -493,7 +493,10 @@ mod tests {
         let provider = Arc::new(FakeProvider::new(
             account("example-user"),
             response_map(vec![
-                (first.clone(), FakeResponse::Present(Box::new(first.clone()))),
+                (
+                    first.clone(),
+                    FakeResponse::Present(Box::new(first.clone())),
+                ),
                 (second.clone(), FakeResponse::Absent),
             ]),
         ));
