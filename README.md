@@ -26,7 +26,7 @@ The first end-to-end inventory slice is implemented:
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is also implemented in the storage crate using crash-resistant per-execution records. Live deletion is intentionally not exposed through the CLI yet. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
+Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI now wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. No live destructive validation has been performed against valuable project artifacts. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
 
 ## CLI
 
@@ -60,6 +60,15 @@ gh-housekeeper plan --repo example-user/project-alpha --format json
 gh-housekeeper plan --repo example-user/project-alpha --format json > plan.json
 
 gh-housekeeper revalidate plan.json
+
+# Destructive: revalidates first, prints exact targets, then requires typing "delete".
+gh-housekeeper apply plan.json
+
+# Destructive automation: explicit non-interactive authorization.
+gh-housekeeper apply plan.json --yes
+
+# Machine-readable final execution output; pre-execution review remains on stderr.
+gh-housekeeper apply plan.json --yes --format json
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.
@@ -89,6 +98,8 @@ scan complete scope
 ```
 
 The project will never intentionally delete items while enumerating a shifting paginated collection, and cached data will never be treated as sufficient authority for deletion.
+
+`apply` is destructive. It reparses the immutable plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
 
 See:
 
