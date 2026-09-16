@@ -2,13 +2,14 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    ActionsCache, Artifact, ArtifactProvider, CacheInventoryService, CacheProvider, CleanupPlan,
+    ActionsCache, Artifact, ArtifactProvider, CacheAggregationKey, CacheInventoryService,
+    CacheProvider, CleanupPlan,
     ExecutionAuthorization, ExecutionService, ExecutionState, InventoryService,
     MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler, MonitoringSchedulerEvent,
     MonitoringSchedulerSummary, MonitoringService, PressureTransitionEvaluation,
     RevalidationService, RevalidationState, ScanOptions, ScanScope, StorageBucket,
-    StoragePressureLevel, format_bytes, matches_glob, monitoring_scheduler_cancellation,
-    parse_duration,
+    StoragePressureLevel, aggregate_caches, format_bytes, matches_glob,
+    monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
@@ -171,6 +172,24 @@ enum CacheSort {
     Repository,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CacheGroupBy {
+    #[value(name = "repo")]
+    Repository,
+    Key,
+    Ref,
+}
+
+impl From<CacheGroupBy> for CacheAggregationKey {
+    fn from(value: CacheGroupBy) -> Self {
+        match value {
+            CacheGroupBy::Repository => Self::Repository,
+            CacheGroupBy::Key => Self::Key,
+            CacheGroupBy::Ref => Self::Ref,
+        }
+    }
+}
+
 #[derive(Args)]
 struct CachesCommand {
     #[command(flatten)]
@@ -181,6 +200,13 @@ struct CachesCommand {
 
     #[arg(long, value_enum, default_value_t = CacheSort::Size)]
     sort: CacheSort,
+
+    #[arg(
+        long,
+        value_enum,
+        help = "Aggregate the filtered cache set by repo, key, or ref instead of listing entries"
+    )]
+    group_by: Option<CacheGroupBy>,
 
     #[arg(long, help = "Cache key glob, for example 'linux-*'")]
     key: Option<String>,
@@ -1240,6 +1266,10 @@ async fn run_caches(provider: Arc<dyn CacheProvider>, command: CachesCommand) ->
 
     let filtered_bytes = caches.iter().map(|cache| cache.size_in_bytes).sum::<u64>();
 
+    let groups = command
+        .group_by
+        .map(|group_by| aggregate_caches(caches.iter().copied(), group_by.into()));
+
     match command.format {
         OutputFormat::Json => {
             println!(
@@ -1250,7 +1280,9 @@ async fn run_caches(provider: Arc<dyn CacheProvider>, command: CachesCommand) ->
                     "scanned_at": snapshot.scanned_at,
                     "cache_count": caches.len(),
                     "total_bytes": filtered_bytes,
-                    "caches": caches,
+                    "group_by": command.group_by.map(|value| format!("{value:?}").to_lowercase()),
+                    "groups": groups,
+                    "caches": if command.group_by.is_none() { Some(&caches) } else { None },
                     "issues": snapshot.issues,
                     "telemetry": snapshot.telemetry,
                 }))?
@@ -1260,21 +1292,33 @@ async fn run_caches(provider: Arc<dyn CacheProvider>, command: CachesCommand) ->
             println!("Caches:  {}", caches.len());
             println!("Storage: {}", format_bytes(filtered_bytes));
             println!();
-            println!(
-                "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} REF",
-                "ID", "REPOSITORY", "KEY", "SIZE", "AGE", "UNUSED"
-            );
-            for cache in caches {
+            if let Some(groups) = groups {
+                println!("{:<48} {:>10} {:>14}", "GROUP", "CACHES", "STORAGE");
+                for bucket in groups {
+                    println!(
+                        "{:<48} {:>10} {:>14}",
+                        bucket.key,
+                        bucket.cache_count,
+                        format_bytes(bucket.bytes)
+                    );
+                }
+            } else {
                 println!(
-                    "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} {}",
-                    cache.id,
-                    cache.repository.full_name,
-                    cache.key,
-                    format_bytes(cache.size_in_bytes),
-                    format_age(cache.age_seconds(now)),
-                    format_age(cache.unused_seconds(now)),
-                    cache.git_ref
+                    "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} REF",
+                    "ID", "REPOSITORY", "KEY", "SIZE", "AGE", "UNUSED"
                 );
+                for cache in caches {
+                    println!(
+                        "{:<12} {:<40} {:<30} {:>12} {:>9} {:>9} {}",
+                        cache.id,
+                        cache.repository.full_name,
+                        cache.key,
+                        format_bytes(cache.size_in_bytes),
+                        format_age(cache.age_seconds(now)),
+                        format_age(cache.unused_seconds(now)),
+                        cache.git_ref
+                    );
+                }
             }
             print_scan_issues(&snapshot.issues);
         }
