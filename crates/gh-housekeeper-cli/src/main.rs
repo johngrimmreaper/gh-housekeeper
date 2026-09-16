@@ -2,14 +2,20 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    Artifact, ArtifactProvider, CleanupPlan, InventoryService, RevalidationService,
-    RevalidationState, ScanOptions, ScanScope, StorageBucket, format_bytes, matches_glob,
-    parse_duration,
+    Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionAuthorizationKind,
+    ExecutionService, ExecutionState, InventoryService, RevalidationService, RevalidationState,
+    ScanOptions, ScanScope, StorageBucket, format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
+use gh_housekeeper_storage::{AuditStore, StatePaths};
 use serde_json::json;
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    io::{self, IsTerminal, Write},
+    path::PathBuf,
+    sync::Arc,
+};
 
 #[derive(Parser)]
 #[command(
@@ -43,6 +49,8 @@ enum Command {
     Plan(PlanCommand),
     /// Revalidate an immutable cleanup plan against current GitHub state without deleting anything.
     Revalidate(RevalidateCommand),
+    /// Apply an immutable cleanup plan through guarded revalidation, deletion, and audit.
+    Apply(ApplyCommand),
 }
 
 #[derive(Args, Clone)]
@@ -189,6 +197,21 @@ struct RevalidateCommand {
     format: OutputFormat,
 }
 
+#[derive(Args)]
+struct ApplyCommand {
+    #[arg(value_name = "PLAN", help = "Path to an immutable cleanup-plan JSON file")]
+    plan: PathBuf,
+
+    #[arg(
+        long,
+        help = "Explicitly authorize non-interactive automation; bypasses the terminal prompt"
+    )]
+    yes: bool,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -201,6 +224,7 @@ async fn main() -> Result<()> {
         Command::Stats(command) => run_stats(provider, command).await,
         Command::Plan(command) => run_plan(provider, command).await,
         Command::Revalidate(command) => run_revalidate(provider, command).await,
+        Command::Apply(command) => run_apply(provider, command).await,
     }
 }
 
@@ -604,6 +628,197 @@ async fn run_revalidate(
     Ok(())
 }
 
+
+async fn run_apply(provider: Arc<dyn ArtifactProvider>, command: ApplyCommand) -> Result<()> {
+    let input = fs::read_to_string(&command.plan)
+        .with_context(|| format!("failed to read cleanup plan {}", command.plan.display()))?;
+    let plan: CleanupPlan = serde_json::from_str(&input)
+        .with_context(|| format!("invalid cleanup plan JSON {}", command.plan.display()))?;
+
+    let revalidation = RevalidationService::new(provider.clone())
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate cleanup plan")?;
+
+    if !revalidation.is_safe_to_apply() {
+        anyhow::bail!(
+            "cleanup plan is not safe to apply: {} changed target(s), {} revalidation failure(s); no deletion was attempted",
+            revalidation.count(RevalidationState::Changed),
+            revalidation.count(RevalidationState::RevalidationFailed)
+        );
+    }
+
+    if plan.targets().is_empty() {
+        match command.format {
+            OutputFormat::Json => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "plan": command.plan,
+                        "targets": 0,
+                        "deleted": 0,
+                        "already_absent": 0,
+                        "changed": 0,
+                        "revalidation_failed": 0,
+                        "delete_failed": 0,
+                        "reclaimed_bytes": 0,
+                        "audit_record": null,
+                        "message": "cleanup plan contains no deletion targets"
+                    }))?
+                );
+            }
+            OutputFormat::Table => {
+                println!("Plan:                 {}", command.plan.display());
+                println!("Targets:              0");
+                println!("No deletion targets; nothing to apply.");
+            }
+        }
+        return Ok(());
+    }
+
+    print_apply_review(&command.plan, &plan, &revalidation);
+
+    let authorization = if command.yes {
+        authorize_apply(true, false, None)?
+    } else {
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "refusing destructive apply without an interactive terminal; rerun interactively or pass --yes explicitly"
+            );
+        }
+
+        eprint!("Type 'delete' to apply this exact cleanup plan: ");
+        io::stderr().flush().context("failed to flush confirmation prompt")?;
+        let mut response = String::new();
+        io::stdin()
+            .read_line(&mut response)
+            .context("failed to read confirmation")?;
+        authorize_apply(false, true, Some(&response))?
+    };
+
+    let execution = ExecutionService::new(provider)
+        .execute(&plan, &revalidation, authorization)
+        .await
+        .context("guarded cleanup execution failed before a complete execution report was produced")?;
+
+    let paths = StatePaths::discover().context(
+        "remote execution completed, but the local state directory could not be determined; do not blindly retry the apply",
+    )?;
+    let audit_store = AuditStore::from_paths(&paths);
+    let audit_path = audit_store.append(&execution).context(
+        "remote execution completed, but audit persistence failed; inspect remote state and do not blindly retry the apply",
+    )?;
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "execution": execution,
+                    "audit_record": audit_path
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!();
+            println!("Execution complete");
+            println!("Authorization:        {:?}", execution.authorization);
+            println!("Targets:              {}", execution.target_count());
+            println!(
+                "Deleted:              {}",
+                execution.count(ExecutionState::Deleted)
+            );
+            println!(
+                "Already absent:       {}",
+                execution.count(ExecutionState::AlreadyAbsent)
+            );
+            println!(
+                "Changed:              {}",
+                execution.count(ExecutionState::Changed)
+            );
+            println!(
+                "Revalidation failed:  {}",
+                execution.count(ExecutionState::RevalidationFailed)
+            );
+            println!(
+                "Delete failed:        {}",
+                execution.count(ExecutionState::DeleteFailed)
+            );
+            println!(
+                "Confirmed reclaimed:  {}",
+                format_bytes(execution.reclaimed_bytes())
+            );
+            println!("Audit record:         {}", audit_path.display());
+
+            if !execution.is_complete_success() {
+                println!();
+                println!(
+                    "Execution completed with blocked or failed target(s); inspect the audit record before retrying anything."
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn print_apply_review(
+    plan_path: &std::path::Path,
+    plan: &CleanupPlan,
+    revalidation: &gh_housekeeper_core::RevalidationReport,
+) {
+    println!("Plan:                 {}", plan_path.display());
+    println!("Account:              {}", plan.account().login);
+    println!("Policy hash:          {}", plan.policy_hash());
+    println!("Targets:              {}", plan.targets().len());
+    println!(
+        "Potential recovery:  {}",
+        format_bytes(plan.summary().reclaimable_bytes())
+    );
+    println!();
+    println!(
+        "{:<12} {:<40} {:<34} {:>12} STATE",
+        "ID", "REPOSITORY", "ARTIFACT", "SIZE"
+    );
+
+    for (target, item) in plan.targets().iter().zip(&revalidation.items) {
+        let artifact = target.artifact();
+        println!(
+            "{:<12} {:<40} {:<34} {:>12} {:?}",
+            artifact.id,
+            artifact.repository.full_name,
+            artifact.name,
+            format_bytes(artifact.size_in_bytes),
+            item.state
+        );
+    }
+
+    println!();
+    println!("Only exact Unchanged targets may reach DELETE after a final just-in-time check.");
+}
+
+fn authorize_apply(
+    yes: bool,
+    stdin_is_terminal: bool,
+    response: Option<&str>,
+) -> Result<ExecutionAuthorization> {
+    if yes {
+        return Ok(ExecutionAuthorization::automation_yes());
+    }
+
+    if !stdin_is_terminal {
+        anyhow::bail!(
+            "refusing destructive apply without an interactive terminal; pass --yes explicitly for automation"
+        );
+    }
+
+    if response.is_some_and(|value| value.trim() == "delete") {
+        return Ok(ExecutionAuthorization::interactive_confirmation());
+    }
+
+    anyhow::bail!("cleanup apply cancelled; confirmation did not exactly match 'delete'")
+}
+
 fn print_buckets(buckets: &[StorageBucket], limit: Option<usize>) {
     println!("{:<56} {:>10} {:>14}", "GROUP", "ARTIFACTS", "STORAGE");
     for bucket in buckets.iter().take(limit.unwrap_or(usize::MAX)) {
@@ -657,5 +872,33 @@ mod tests {
         assert_eq!(format_age(90), "1m");
         assert_eq!(format_age(7_200), "2h");
         assert_eq!(format_age(172_800), "2d");
+    }
+
+    #[test]
+    fn yes_creates_explicit_automation_authorization() {
+        let authorization = authorize_apply(true, false, None).unwrap();
+        assert_eq!(
+            authorization.kind(),
+            ExecutionAuthorizationKind::AutomationYes
+        );
+    }
+
+    #[test]
+    fn non_interactive_apply_without_yes_is_rejected() {
+        let error = authorize_apply(false, false, None).unwrap_err();
+        assert!(error.to_string().contains("--yes"));
+    }
+
+    #[test]
+    fn interactive_apply_requires_exact_delete_confirmation() {
+        let authorization = authorize_apply(false, true, Some("delete\n")).unwrap();
+        assert_eq!(
+            authorization.kind(),
+            ExecutionAuthorizationKind::InteractiveConfirmation
+        );
+
+        assert!(authorize_apply(false, true, Some("yes\n")).is_err());
+        assert!(authorize_apply(false, true, Some("DELETE\n")).is_err());
+        assert!(authorize_apply(false, true, Some("\n")).is_err());
     }
 }

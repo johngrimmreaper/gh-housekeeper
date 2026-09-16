@@ -398,6 +398,7 @@ dependencies = [
  "gh-housekeeper-core",
  "gh-housekeeper-github",
  "gh-housekeeper-policy",
+ "gh-housekeeper-storage",
  "serde_json",
  "tokio",
 ]
