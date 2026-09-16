@@ -26,7 +26,7 @@ The first end-to-end inventory slice is implemented:
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. No live destructive validation has been performed against valuable project artifacts. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
+Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
 ## CLI
 
@@ -77,6 +77,20 @@ gh-housekeeper history --format json
 
 # Select executions that touched a repository; matching is case-insensitive.
 gh-housekeeper history --repo example-user/project-alpha
+
+# Local configuration; these commands do not contact GitHub.
+gh-housekeeper config path
+gh-housekeeper config show
+
+# Persist absolute byte thresholds without assuming a GitHub plan/quota.
+gh-housekeeper config init \
+  --warning-bytes 314572800 \
+  --critical-bytes 419430400
+
+# Read-only scan + pressure classification for the selected scan scope.
+gh-housekeeper status
+gh-housekeeper status --owner example-user
+gh-housekeeper status --repo example-user/project-alpha --format json
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.
@@ -127,3 +141,14 @@ cargo clippy --workspace --all-targets --all-features
 ```
 
 CI does not upload build artifacts on ordinary commits.
+
+
+## Monitoring configuration
+
+Persistent application configuration lives at the platform-specific gh-housekeeper configuration directory as `config.toml`. Schema version 1 currently contains a monitoring check interval plus optional absolute warning/critical storage thresholds.
+
+Missing configuration is safe: gh-housekeeper uses an in-memory default with a 30-minute future monitoring interval and **no warning or critical threshold**. It does not invent a GitHub storage quota.
+
+`gh-housekeeper status` scans the scope selected by `--owner`/`--repo` (or all accessible repositories when no scope is supplied), sums artifact metadata for that scan, and classifies the result as `unconfigured`, `healthy`, `warning`, or `critical`.
+
+This is **scanned-scope artifact storage**, not a claim about GitHub billing, account quota, or every repository for which another owner may be charged.
