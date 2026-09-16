@@ -863,7 +863,6 @@ fn authorize_apply(
     anyhow::bail!("cleanup apply cancelled; confirmation did not exactly match 'delete'")
 }
 
-
 fn run_history(command: HistoryCommand) -> Result<()> {
     let paths = StatePaths::discover()
         .context("failed to determine local gh-housekeeper state directory")?;
