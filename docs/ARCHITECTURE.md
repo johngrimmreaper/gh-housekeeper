@@ -83,7 +83,7 @@ The CLI now exposes this pipeline through guarded `apply` orchestration. The CLI
 
 The read-only `history` command is intentionally outside the provider path. It discovers the platform state directory, reads `AuditStore`, optionally selects execution records that touched an exact repository name with case-insensitive matching, and renders table or JSON output. Repository filtering selects whole immutable audit records; it does not rewrite their target lists or turn history into remote truth.
 
-Local `config path/show/init` commands are also outside the provider path. `status` is read-only but does use `InventoryService`: it loads configured thresholds, scans the selected repository scope, sums artifact metadata in that scan, then evaluates provider-neutral storage pressure. It deliberately does not infer billing ownership or an account quota from repository accessibility.
+Local `config path/show/init` commands are also outside the provider path. `status` is read-only and is now a thin presentation layer over shared `MonitoringService`. The service owns the orchestration of `InventoryService` plus explicit `StorageThresholds` and returns a serializable `MonitoringReport` containing account, scope, timestamps, repository/artifact counts, total bytes, pressure, scan issues, and provider telemetry. It deliberately does not infer billing ownership or an account quota from repository accessibility.
 
 Deletion follows this invariant:
 

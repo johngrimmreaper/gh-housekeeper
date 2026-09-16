@@ -152,3 +152,5 @@ Missing configuration is safe: gh-housekeeper uses an in-memory default with a 3
 `gh-housekeeper status` scans the scope selected by `--owner`/`--repo` (or all accessible repositories when no scope is supplied), sums artifact metadata for that scan, and classifies the result as `unconfigured`, `healthy`, `warning`, or `critical`.
 
 This is **scanned-scope artifact storage**, not a claim about GitHub billing, account quota, or every repository for which another owner may be charged.
+
+Monitoring orchestration now lives in the shared core as `MonitoringService`. CLI `status`, the future scheduler, tray agent, and GUI can consume the same `MonitoringReport` rather than reimplementing inventory + threshold logic.
