@@ -37,7 +37,7 @@ GitHub REST response structs are private to this crate.
 
 ### `gh-housekeeper-policy`
 
-Declarative policy parsing and explainable classification. The first product default is ordinary retention of 30 days. Repository/artifact semantics must come only from user configuration and metadata.
+Declarative, resource-aware policy parsing and explainable classification for artifacts and Actions caches. Legacy rules default to artifact semantics; cache rules use cache-specific key/ref and last-accessed retention fields. The first product default remains ordinary retention of 30 days. Resource semantics must come only from user configuration and metadata.
 
 ### `gh-housekeeper-storage`
 
@@ -102,7 +102,7 @@ Pressure changes are derived in core through `evaluate_pressure_transition`. Tra
 
 `MonitoringNotificationSignal` is a provider-neutral output derived from those transition evaluations and scheduler failures. It distinguishes no notification, entering warning/critical pressure, recovering to warning/healthy, incomplete monitoring, and monitoring failure. Scheduler events carry both the detailed transition and the notification signal so future CLI, tray, GUI, or OS notification adapters can share exactly the same classification.
 
-Cache inventory is read-only at this checkpoint. Cache policy, cleanup targets, exact revalidation, mutation, and audit must reuse the same safety shape before any cache DELETE is exposed. Workflow runs and run logs require distinct operations because deleting a run can also remove associated artifacts, while deleting logs may preserve the historical run.
+Cache inventory and cache policy classification are read-only at this checkpoint. The CLI exposes this as `classify caches`, which scans the complete selected cache scope and invokes the shared policy engine without constructing a cleanup plan or mutation capability. Cache cleanup targets, exact revalidation, mutation, and audit must reuse the same safety shape before any cache DELETE is exposed. Workflow runs and run logs require distinct operations because deleting a run can also remove associated artifacts, while deleting logs may preserve the historical run.
 
 Before multi-resource destructive planning, dependency resolution must sit between classification and plan construction so a planned workflow-run deletion cannot double-count or redundantly delete artifacts already removed by that run. Storage estimates must keep artifact bytes and cache bytes separate; run/log counts must not be invented as byte usage when GitHub does not expose reliable bytes.
 
@@ -123,7 +123,7 @@ Enumeration and deletion are separate phases. Deleting a target can never determ
 
 ## Multi-resource direction
 
-The next backend milestones are cache policy/planning/revalidation/deletion, then workflow-run inventory and workflow-run-log operations. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
+The next backend milestones are strongly typed cache planning/revalidation/deletion, then workflow-run inventory and workflow-run-log operations. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
 
 Monitoring is still artifact-only in the current schema. Once cache housekeeping is structurally integrated, monitoring can evolve to expose artifact count/bytes and cache count/bytes as separate categories plus a clearly-defined observable-storage total. Run/log metrics remain separate unless a trustworthy byte measurement is available.
 
