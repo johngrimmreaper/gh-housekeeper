@@ -279,6 +279,7 @@ mod tests {
                 login: "example-user".to_owned(),
             },
             scope: ScanScope::Repository("example-user/project-alpha".to_owned()),
+            exclude_repositories: Vec::new(),
             scanned_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, second).unwrap(),
             elapsed_ms: 42,
             repository_count: 1,
