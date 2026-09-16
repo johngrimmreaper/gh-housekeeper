@@ -26,7 +26,7 @@ The first end-to-end inventory slice is implemented:
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout.
 
-Remote revalidation of exact cleanup-plan targets is implemented. A safe executor now exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. It is intentionally not exposed as a live deletion CLI command yet. Audit persistence, scheduling/system-tray monitoring, and the native GUI are the next implementation slices.
+Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is also implemented in the storage crate using crash-resistant per-execution records. Live deletion is intentionally not exposed through the CLI yet. Scheduling/system-tray monitoring and the native GUI remain later implementation slices.
 
 ## CLI
 

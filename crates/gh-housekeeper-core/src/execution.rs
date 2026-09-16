@@ -1,5 +1,5 @@
 use crate::{
-    Artifact, ArtifactField, ArtifactProvider, CleanupPlan, DeleteOutcome, ProviderError,
+    Account, Artifact, ArtifactField, ArtifactProvider, CleanupPlan, DeleteOutcome, ProviderError,
     ProviderTelemetry, RevalidationError, RevalidationReport, RevalidationState,
     revalidation::{changed_fields, ensure_same_account},
 };
@@ -64,6 +64,7 @@ pub struct ExecutionItem {
 pub struct ExecutionReport {
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
+    pub account: Account,
     pub plan_created_at: DateTime<Utc>,
     pub plan_scanned_at: DateTime<Utc>,
     pub policy_hash: String,
@@ -198,6 +199,7 @@ impl ExecutionService {
         Ok(ExecutionReport {
             started_at,
             completed_at: Utc::now(),
+            account: current_account,
             plan_created_at: plan.created_at(),
             plan_scanned_at: plan.scanned_at(),
             policy_hash: plan.policy_hash().to_owned(),

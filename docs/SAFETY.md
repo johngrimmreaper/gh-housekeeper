@@ -67,6 +67,8 @@ Revalidation is also non-destructive. It verifies the current authenticated acco
 
 The core execution service requires both a reviewed revalidation report and an explicit authorization value. It rejects mismatched or unsafe reviewed reports before making remote calls, then revalidates every target again immediately before mutation. Only exact unchanged snapshot targets may reach DELETE. Already-absent targets are skipped, changed targets are blocked, revalidation failures are blocked, and delete failures are recorded as structured results. The executor never rescans or chooses replacement targets.
 
+Execution outcomes can now be persisted in versioned audit records under the platform state directory. Audit files contain only domain/account metadata, policy identity, execution outcomes, and provider-safe error strings; there is no credential/token field. Audit/history data is observational only and never authorizes a later deletion.
+
 Interactive deletion will require explicit confirmation. Automation will require a deliberate `--yes`; non-interactive stdout must never imply consent. The current CLI deliberately does not expose live deletion yet.
 
 ## Explainability

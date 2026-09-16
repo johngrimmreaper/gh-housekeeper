@@ -41,7 +41,7 @@ Declarative policy parsing and explainable classification. The first product def
 
 ### `gh-housekeeper-storage`
 
-Local cache, state, and audit persistence. The initial code establishes platform-aware application paths. Cached inventory will improve browsing but will never authorize a destructive operation.
+Local cache, state, and audit persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store. Each execution is written as its own immutable JSON record through a temporary file, `sync_all`, and rename before it becomes visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached or historical state never authorizes a destructive operation.
 
 ### `gh-housekeeper-cli`
 
@@ -77,7 +77,7 @@ The immutable cleanup-plan slice is implemented. A plan contains the complete ar
 
 Remote revalidation is now implemented as a shared core service. It verifies the authenticated account first, then performs one exact artifact lookup per cleanup target without rescanning repositories or artifact collections. Exact matches are `Unchanged`; missing targets are `AlreadyAbsent`; any metadata drift is `Changed`; provider lookup failures are `RevalidationFailed`. No deletion occurs during revalidation.
 
-The shared core also contains a safe execution service. It requires a revalidation report that exactly matches the immutable plan and contains no unsafe reviewed states, plus an explicit `ExecutionAuthorization`. Before each mutation it performs another exact just-in-time artifact lookup. Only an exact snapshot match is submitted to `delete_artifact`. A target that disappeared, changed, or cannot be revalidated is never retargeted or replaced by a newly enumerated candidate. The executor is not exposed as a live CLI deletion command yet.
+The shared core also contains a safe execution service. It requires a revalidation report that exactly matches the immutable plan and contains no unsafe reviewed states, plus an explicit `ExecutionAuthorization`. Before each mutation it performs another exact just-in-time artifact lookup. Only an exact snapshot match is submitted to `delete_artifact`. A target that disappeared, changed, or cannot be revalidated is never retargeted or replaced by a newly enumerated candidate. Execution reports now carry the authenticated provider/account identity so durable audit records are self-contained. The executor is not exposed as a live CLI deletion command yet.
 
 Deletion follows this invariant:
 
