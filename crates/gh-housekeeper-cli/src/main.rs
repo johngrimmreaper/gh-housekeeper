@@ -3,8 +3,8 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, MonitoringRunner, MonitoringScheduler,
-    MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
+    ExecutionState, InventoryService, MonitoringNotificationSignal, MonitoringRunner,
+    MonitoringScheduler, MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
     StorageBucket, StoragePressureLevel, format_bytes, matches_glob,
     monitoring_scheduler_cancellation, parse_duration,
@@ -562,16 +562,33 @@ async fn run_monitor_watch(
         }
     };
 
+    let scan_options = command.scope.scan_options();
+    let account = provider
+        .account()
+        .await
+        .context("failed to resolve monitoring account identity")?;
     let store = MonitoringHistoryStore::from_paths(&paths);
-    let runner = MonitoringRunner::new(MonitoringService::new(provider), store);
-    let scheduler = MonitoringScheduler::new(
+    let baseline_lookup = store
+        .latest_compatible(&account, &scan_options)
+        .context("failed to load compatible monitoring baseline")?;
+    let baseline_recorded_at = baseline_lookup.sample.as_ref().map(|sample| sample.recorded_at);
+    let baseline_report = baseline_lookup.sample.map(|sample| sample.report);
+    print_monitoring_read_issues(&baseline_lookup.issues);
+
+    let runner = MonitoringRunner::new(MonitoringService::new(Arc::clone(&provider)), store);
+    let mut scheduler = MonitoringScheduler::new(
         runner,
-        command.scope.scan_options(),
+        scan_options,
         thresholds,
         interval,
         interval,
     )
     .context("invalid monitoring scheduler configuration")?;
+    if let Some(baseline) = baseline_report {
+        scheduler = scheduler
+            .with_baseline(baseline)
+            .context("persisted monitoring baseline is incompatible with this scan")?;
+    }
 
     let (cancellation, shutdown) = monitoring_scheduler_cancellation();
     let signal_cancellation = cancellation.clone();
@@ -602,6 +619,12 @@ async fn run_monitor_watch(
                 .directory()
                 .display()
         );
+        println!(
+            "Baseline:             {}",
+            baseline_recorded_at
+                .map(|value| value.format("%Y-%m-%d %H:%M:%SZ").to_string())
+                .unwrap_or_else(|| "none".to_owned())
+        );
         println!();
     }
 
@@ -627,14 +650,16 @@ fn print_monitoring_scheduler_event(
             MonitoringSchedulerEvent::Iteration {
                 iteration,
                 transition,
+                notification,
             },
         ) => {
             println!(
-                "{}  {:<12} {:>12}  {:<28} {}",
+                "{}  {:<12} {:>12}  {:<28} {:<24} {}",
                 iteration.report.scanned_at.format("%Y-%m-%d %H:%M:%SZ"),
                 pressure_label(iteration.report.pressure.level),
                 format_bytes(iteration.report.total_bytes),
                 transition_label(&transition),
+                notification_label(notification),
                 iteration.receipt.display()
             );
         }
@@ -644,10 +669,12 @@ fn print_monitoring_scheduler_event(
                 error,
                 consecutive_failures,
                 retry_after,
+                notification,
             },
         ) => {
             eprintln!(
-                "monitoring failure #{consecutive_failures}: {error}; next attempt in {}s",
+                "monitoring failure #{consecutive_failures}: {error}; signal={}; next attempt in {}s",
+                notification_label(notification),
                 retry_after.as_secs()
             );
         }
@@ -656,6 +683,7 @@ fn print_monitoring_scheduler_event(
             MonitoringSchedulerEvent::Iteration {
                 iteration,
                 transition,
+                notification,
             },
         ) => {
             println!(
@@ -665,6 +693,7 @@ fn print_monitoring_scheduler_event(
                     "report": iteration.report,
                     "sample_path": iteration.receipt,
                     "transition": transition,
+                    "notification": notification,
                 }))
                 .expect("scheduler iteration JSON serialization should succeed")
             );
@@ -675,6 +704,7 @@ fn print_monitoring_scheduler_event(
                 error,
                 consecutive_failures,
                 retry_after,
+                notification,
             },
         ) => {
             println!(
@@ -684,6 +714,7 @@ fn print_monitoring_scheduler_event(
                     "error": error.to_string(),
                     "consecutive_failures": consecutive_failures,
                     "retry_after_seconds": retry_after.as_secs(),
+                    "notification": notification,
                 }))
                 .expect("scheduler failure JSON serialization should succeed")
             );
@@ -739,6 +770,18 @@ fn transition_label(evaluation: &PressureTransitionEvaluation) -> String {
                 thresholds
             )
         }
+    }
+}
+
+fn notification_label(signal: MonitoringNotificationSignal) -> &'static str {
+    match signal {
+        MonitoringNotificationSignal::NoNotification => "none",
+        MonitoringNotificationSignal::EnteredWarning { .. } => "entered_warning",
+        MonitoringNotificationSignal::EnteredCritical { .. } => "entered_critical",
+        MonitoringNotificationSignal::RecoveredToWarning { .. } => "recovered_to_warning",
+        MonitoringNotificationSignal::RecoveredToHealthy { .. } => "recovered_to_healthy",
+        MonitoringNotificationSignal::MonitoringIncomplete { .. } => "monitoring_incomplete",
+        MonitoringNotificationSignal::MonitoringFailure { .. } => "monitoring_failure",
     }
 }
 
