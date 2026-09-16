@@ -45,6 +45,17 @@ impl ActionsCache {
 #[async_trait]
 pub trait CacheProvider: RepositoryProvider {
     async fn caches(&self, repository: &Repository) -> ProviderResult<Vec<ActionsCache>>;
+
+    /// Look up one cache by its stable provider ID without mutating remote state.
+    ///
+    /// Providers that lack a native GET-by-ID endpoint may implement this by listing the
+    /// repository's caches and selecting the exact ID. Callers must still compare the returned
+    /// snapshot with their expected immutable snapshot before authorizing any future mutation.
+    async fn cache(
+        &self,
+        repository: &RepositoryRef,
+        cache_id: u64,
+    ) -> ProviderResult<Option<ActionsCache>>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
