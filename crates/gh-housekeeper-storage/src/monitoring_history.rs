@@ -98,11 +98,12 @@ impl MonitoringHistoryStore {
             return Ok(MonitoringHistory::default());
         }
 
-        let entries = fs::read_dir(&self.directory).map_err(|source| MonitoringHistoryError::Io {
-            operation: "read monitoring history directory",
-            path: self.directory.clone(),
-            source,
-        })?;
+        let entries =
+            fs::read_dir(&self.directory).map_err(|source| MonitoringHistoryError::Io {
+                operation: "read monitoring history directory",
+                path: self.directory.clone(),
+                source,
+            })?;
 
         let mut paths = Vec::new();
         for entry in entries {
@@ -278,10 +279,7 @@ mod tests {
                 login: "example-user".to_owned(),
             },
             scope: ScanScope::Repository("example-user/project-alpha".to_owned()),
-            scanned_at: chrono::TimeZone::with_ymd_and_hms(
-                &Utc, 2026, 2, 1, 0, 0, second,
-            )
-            .unwrap(),
+            scanned_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, second).unwrap(),
             elapsed_ms: 42,
             repository_count: 1,
             artifact_count: 2,
