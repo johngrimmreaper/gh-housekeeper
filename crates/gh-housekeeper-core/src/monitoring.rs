@@ -178,10 +178,7 @@ mod tests {
     }
 
     impl FakeProvider {
-        fn new(
-            repositories: Vec<Repository>,
-            artifacts: BTreeMap<String, FakeArtifacts>,
-        ) -> Self {
+        fn new(repositories: Vec<Repository>, artifacts: BTreeMap<String, FakeArtifacts>) -> Self {
             Self {
                 account: Account {
                     provider: "example".to_owned(),
