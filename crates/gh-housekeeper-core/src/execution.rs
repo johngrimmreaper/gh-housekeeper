@@ -812,7 +812,10 @@ mod tests {
         let provider = Arc::new(FakeProvider::new(
             account("example-user"),
             lookup_map(vec![
-                (first.clone(), FakeLookup::Present(first.clone())),
+                (
+                    first.clone(),
+                    FakeLookup::Present(Box::new(first.clone())),
+                ),
                 (second, FakeLookup::Absent),
                 (third, FakeLookup::Present(Box::new(changed_third))),
             ]),
