@@ -1,3 +1,9 @@
+mod audit;
+
+pub use audit::{
+    AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
+};
+
 use std::{env, path::PathBuf};
 use thiserror::Error;
 

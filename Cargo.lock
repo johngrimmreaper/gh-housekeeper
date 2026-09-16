@@ -448,6 +448,10 @@ dependencies = [
 name = "gh-housekeeper-storage"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "gh-housekeeper-core",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
