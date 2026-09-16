@@ -69,7 +69,13 @@ The core execution service requires both a reviewed revalidation report and an e
 
 Execution outcomes can now be persisted in versioned audit records under the platform state directory. Audit files contain only domain/account metadata, policy identity, execution outcomes, and provider-safe error strings; there is no credential/token field. Audit/history data is observational only and never authorizes a later deletion.
 
-Interactive deletion will require explicit confirmation. Automation will require a deliberate `--yes`; non-interactive stdout must never imply consent. The current CLI deliberately does not expose live deletion yet.
+The guarded CLI `apply` path now enforces the confirmation boundary. Interactive deletion requires stdin to be a terminal and requires the exact lowercase confirmation word `delete`. Non-interactive execution without `--yes` is refused. Automation requires a deliberate `--yes`, which creates the distinct automation authorization kind.
+
+Before asking for consent, `apply` revalidates the immutable plan and refuses any `Changed` or `RevalidationFailed` target. After consent, `ExecutionService` performs its own just-in-time exact lookup again before each possible DELETE. Zero-target plans return without prompting or mutation.
+
+The CLI does not claim successful completion until the resulting execution report has been persisted through `AuditStore`. If remote execution completes but the state directory cannot be resolved or audit persistence fails, the command surfaces that condition explicitly and warns against blind retry because remote mutations may already have occurred.
+
+No destructive live validation should use valuable existing project artifacts. Any future end-to-end DELETE validation must use a deliberately-created disposable artifact in a controlled disposable repository or equivalent target.
 
 ## Explainability
 
