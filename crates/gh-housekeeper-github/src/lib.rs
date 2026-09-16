@@ -371,6 +371,7 @@ impl CacheProvider for GithubClient {
     ) -> ProviderResult<Option<ActionsCache>> {
         validate_full_name(&repository.full_name)?;
         let mut page = 1usize;
+        let mut inspected = 0_u64;
 
         loop {
             let path = format!(
@@ -380,6 +381,7 @@ impl CacheProvider for GithubClient {
             let response: GithubCachePage = self.get_json(&path).await?;
             let item_count = response.actions_caches.len();
             let total_count = response.total_count;
+            inspected = inspected.saturating_add(item_count as u64);
 
             if let Some(cache) = response
                 .actions_caches
@@ -389,7 +391,7 @@ impl CacheProvider for GithubClient {
                 return Ok(Some(cache.into_domain(repository.clone())));
             }
 
-            if item_count == 0 || (page * PER_PAGE) as u64 >= total_count {
+            if item_count == 0 || inspected >= total_count {
                 return Ok(None);
             }
             page += 1;
