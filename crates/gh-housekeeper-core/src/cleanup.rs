@@ -94,13 +94,27 @@ impl CleanupPlanSummary {
         }
     }
 
-    pub fn source_artifact_count(&self) -> usize { self.source_artifact_count }
-    pub fn source_total_bytes(&self) -> u64 { self.source_total_bytes }
-    pub fn keep_count(&self) -> usize { self.keep_count }
-    pub fn protected_count(&self) -> usize { self.protected_count }
-    pub fn manual_review_count(&self) -> usize { self.manual_review_count }
-    pub fn delete_count(&self) -> usize { self.delete_count }
-    pub fn reclaimable_bytes(&self) -> u64 { self.reclaimable_bytes }
+    pub fn source_artifact_count(&self) -> usize {
+        self.source_artifact_count
+    }
+    pub fn source_total_bytes(&self) -> u64 {
+        self.source_total_bytes
+    }
+    pub fn keep_count(&self) -> usize {
+        self.keep_count
+    }
+    pub fn protected_count(&self) -> usize {
+        self.protected_count
+    }
+    pub fn manual_review_count(&self) -> usize {
+        self.manual_review_count
+    }
+    pub fn delete_count(&self) -> usize {
+        self.delete_count
+    }
+    pub fn reclaimable_bytes(&self) -> u64 {
+        self.reclaimable_bytes
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,7 +198,11 @@ impl CleanupPlan {
                     artifact_id: artifact.id,
                 });
             }
-            if !snapshot.artifacts.iter().any(|candidate| candidate == artifact) {
+            if !snapshot
+                .artifacts
+                .iter()
+                .any(|candidate| candidate == artifact)
+            {
                 return Err(CleanupPlanError::TargetNotInSnapshot {
                     repository: artifact.repository.full_name.clone(),
                     artifact_id: artifact.id,
@@ -212,28 +230,54 @@ impl CleanupPlan {
         })
     }
 
-    pub fn schema_version(&self) -> u32 { self.schema_version }
-    pub fn created_at(&self) -> DateTime<Utc> { self.created_at }
-    pub fn scanned_at(&self) -> DateTime<Utc> { self.scanned_at }
-    pub fn account(&self) -> &Account { &self.account }
-    pub fn scope(&self) -> &ScanScope { &self.scope }
-    pub fn policy_hash(&self) -> &str { &self.policy_hash }
-    pub fn summary(&self) -> &CleanupPlanSummary { &self.summary }
-    pub fn targets(&self) -> &[CleanupTarget] { &self.targets }
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+    pub fn scanned_at(&self) -> DateTime<Utc> {
+        self.scanned_at
+    }
+    pub fn account(&self) -> &Account {
+        &self.account
+    }
+    pub fn scope(&self) -> &ScanScope {
+        &self.scope
+    }
+    pub fn policy_hash(&self) -> &str {
+        &self.policy_hash
+    }
+    pub fn summary(&self) -> &CleanupPlanSummary {
+        &self.summary
+    }
+    pub fn targets(&self) -> &[CleanupTarget] {
+        &self.targets
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum CleanupPlanError {
-    #[error("cannot create a cleanup plan from an incomplete snapshot ({issue_count} scan issue(s))")]
+    #[error(
+        "cannot create a cleanup plan from an incomplete snapshot ({issue_count} scan issue(s))"
+    )]
     IncompleteSnapshot { issue_count: usize },
     #[error("cleanup plan policy hash must not be empty")]
     EmptyPolicyHash,
     #[error("cleanup plan summary mismatch: {0}")]
     SummaryMismatch(String),
     #[error("duplicate cleanup target {repository} artifact {artifact_id}")]
-    DuplicateTarget { repository: String, artifact_id: u64 },
-    #[error("cleanup target {repository} artifact {artifact_id} is not part of the inventory snapshot")]
-    TargetNotInSnapshot { repository: String, artifact_id: u64 },
+    DuplicateTarget {
+        repository: String,
+        artifact_id: u64,
+    },
+    #[error(
+        "cleanup target {repository} artifact {artifact_id} is not part of the inventory snapshot"
+    )]
+    TargetNotInSnapshot {
+        repository: String,
+        artifact_id: u64,
+    },
 }
 
 #[cfg(test)]
