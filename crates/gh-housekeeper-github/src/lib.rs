@@ -588,11 +588,9 @@ mod tests {
         let page_one = r#"{"total_count":2,"actions_caches":[{"id":505,"ref":"refs/heads/main","key":"linux-build","version":"version-a","last_accessed_at":"2026-09-10T12:00:00Z","created_at":"2026-09-01T12:00:00Z","size_in_bytes":1024}]}"#.to_owned();
         let page_two = r#"{"total_count":2,"actions_caches":[{"id":506,"ref":"refs/pull/42/merge","key":"linux-test","version":"version-b","last_accessed_at":"2026-09-11T12:00:00Z","created_at":"2026-09-02T12:00:00Z","size_in_bytes":2048}]}"#.to_owned();
         let (base_url, requests, server) = spawn_http_fixture(vec![page_one, page_two]);
-        let client = GithubClient::with_base_url(
-            SecretToken("fictional-token".to_owned()),
-            base_url,
-        )
-        .unwrap();
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
         let repository = Repository {
             id: 1,
             owner: "example-user".to_owned(),
