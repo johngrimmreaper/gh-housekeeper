@@ -340,7 +340,8 @@ where
 {
     let started = std::time::Instant::now();
     let account = RepositoryProvider::account(provider.as_ref()).await?;
-    let mut repositories = RepositoryProvider::repositories(provider.as_ref(), &options.scope).await?;
+    let mut repositories =
+        RepositoryProvider::repositories(provider.as_ref(), &options.scope).await?;
 
     repositories.retain(|repository| {
         !options
