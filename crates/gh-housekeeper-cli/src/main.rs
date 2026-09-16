@@ -863,6 +863,127 @@ fn authorize_apply(
     anyhow::bail!("cleanup apply cancelled; confirmation did not exactly match 'delete'")
 }
 
+
+fn run_history(command: HistoryCommand) -> Result<()> {
+    let paths =
+        StatePaths::discover().context("failed to determine local gh-housekeeper state directory")?;
+    let store = AuditStore::from_paths(&paths);
+    let history = store
+        .read_all()
+        .context("failed to read local execution audit history")?;
+
+    let records = history
+        .records
+        .iter()
+        .filter(|record| history_record_matches_repository(record, command.repository.as_deref()))
+        .collect::<Vec<_>>();
+
+    match command.format {
+        OutputFormat::Json => {
+            let issues = history
+                .issues
+                .iter()
+                .map(|issue| {
+                    json!({
+                        "path": issue.path,
+                        "message": issue.message,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "state_directory": paths.state_dir,
+                    "audit_directory": store.directory(),
+                    "repository_filter": command.repository,
+                    "records": records,
+                    "issues": issues,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            if records.is_empty() {
+                match command.repository.as_deref() {
+                    Some(repository) => {
+                        println!("No audit records found for repository {repository}.");
+                    }
+                    None => println!("No audit records found."),
+                }
+            } else {
+                println!(
+                    "{:<20} {:<26} {:<11} {:>7} {:>7} {:>7} {:>7} {:>7} {:>11}",
+                    "RECORDED",
+                    "ACCOUNT",
+                    "AUTH",
+                    "TARGETS",
+                    "DELETED",
+                    "ABSENT",
+                    "CHANGED",
+                    "FAILED",
+                    "RECLAIMED"
+                );
+
+                for record in records.iter().rev() {
+                    let execution = &record.execution;
+                    let failed = execution
+                        .count(ExecutionState::RevalidationFailed)
+                        .saturating_add(execution.count(ExecutionState::DeleteFailed));
+                    println!(
+                        "{:<20} {:<26} {:<11} {:>7} {:>7} {:>7} {:>7} {:>7} {:>11}",
+                        record.recorded_at.format("%Y-%m-%d %H:%M:%SZ"),
+                        format!("{}:{}", execution.account.provider, execution.account.login),
+                        format_authorization(execution.authorization),
+                        execution.target_count(),
+                        execution.count(ExecutionState::Deleted),
+                        execution.count(ExecutionState::AlreadyAbsent),
+                        execution.count(ExecutionState::Changed),
+                        failed,
+                        format_bytes(execution.reclaimed_bytes())
+                    );
+                }
+            }
+
+            print_audit_issues(&history.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn history_record_matches_repository(record: &AuditRecord, repository: Option<&str>) -> bool {
+    let Some(repository) = repository else {
+        return true;
+    };
+
+    record
+        .execution
+        .items
+        .iter()
+        .any(|item| item.repository.eq_ignore_ascii_case(repository))
+}
+
+fn format_authorization(
+    authorization: gh_housekeeper_core::ExecutionAuthorizationKind,
+) -> &'static str {
+    match authorization {
+        gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation => "interactive",
+        gh_housekeeper_core::ExecutionAuthorizationKind::AutomationYes => "automation",
+    }
+}
+
+fn print_audit_issues(issues: &[AuditReadIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    eprintln!();
+    eprintln!("Audit history contains {} unreadable record(s):", issues.len());
+    for issue in issues {
+        eprintln!("- {}: {}", issue.path.display(), issue.message);
+    }
+}
+
 fn print_buckets(buckets: &[StorageBucket], limit: Option<usize>) {
     println!("{:<56} {:>10} {:>14}", "GROUP", "ARTIFACTS", "STORAGE");
     for bucket in buckets.iter().take(limit.unwrap_or(usize::MAX)) {
