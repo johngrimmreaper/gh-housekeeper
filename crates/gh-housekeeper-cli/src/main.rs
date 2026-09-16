@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    Artifact, ArtifactProvider, InventoryService, ScanOptions, ScanScope, StorageBucket,
-    format_bytes, matches_glob, parse_duration,
+    Artifact, ArtifactProvider, CleanupPlan, InventoryService, RevalidationService,
+    RevalidationState, ScanOptions, ScanScope, StorageBucket, format_bytes, matches_glob,
+    parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
@@ -40,6 +41,8 @@ enum Command {
     Stats(StatsCommand),
     /// Build an immutable dry-run cleanup plan without deleting anything.
     Plan(PlanCommand),
+    /// Revalidate an immutable cleanup plan against current GitHub state without deleting anything.
+    Revalidate(RevalidateCommand),
 }
 
 #[derive(Args, Clone)]
@@ -177,6 +180,15 @@ struct PlanCommand {
     explain: bool,
 }
 
+#[derive(Args)]
+struct RevalidateCommand {
+    #[arg(value_name = "PLAN", help = "Path to a cleanup-plan JSON file")]
+    plan: PathBuf,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -188,6 +200,7 @@ async fn main() -> Result<()> {
         Command::Artifacts(command) => run_artifacts(provider, command).await,
         Command::Stats(command) => run_stats(provider, command).await,
         Command::Plan(command) => run_plan(provider, command).await,
+        Command::Revalidate(command) => run_revalidate(provider, command).await,
     }
 }
 
@@ -506,6 +519,82 @@ async fn run_plan(provider: Arc<dyn ArtifactProvider>, command: PlanCommand) -> 
                             reason.explanation()
                         );
                     }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_revalidate(
+    provider: Arc<dyn ArtifactProvider>,
+    command: RevalidateCommand,
+) -> Result<()> {
+    let input = fs::read_to_string(&command.plan)
+        .with_context(|| format!("failed to read cleanup plan {}", command.plan.display()))?;
+    let plan: CleanupPlan = serde_json::from_str(&input)
+        .with_context(|| format!("invalid cleanup plan JSON {}", command.plan.display()))?;
+    let report = RevalidationService::new(provider)
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate cleanup plan")?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+        OutputFormat::Table => {
+            println!("Plan:                 {}", command.plan.display());
+            println!("Policy hash:          {}", report.policy_hash);
+            println!("Targets checked:      {}", report.target_count());
+            println!(
+                "Unchanged:            {}",
+                report.count(RevalidationState::Unchanged)
+            );
+            println!(
+                "Already absent:       {}",
+                report.count(RevalidationState::AlreadyAbsent)
+            );
+            println!(
+                "Changed:              {}",
+                report.count(RevalidationState::Changed)
+            );
+            println!(
+                "Revalidation failed:  {}",
+                report.count(RevalidationState::RevalidationFailed)
+            );
+            println!(
+                "Safe to apply:        {}",
+                if report.is_safe_to_apply() { "yes" } else { "no" }
+            );
+
+            if !report.items.is_empty() {
+                println!();
+                println!(
+                    "{:<12} {:<40} {:<22} DETAILS",
+                    "ID", "REPOSITORY", "STATE"
+                );
+                for item in &report.items {
+                    let details = match item.state {
+                        RevalidationState::Unchanged => "exact snapshot match".to_owned(),
+                        RevalidationState::AlreadyAbsent => "artifact no longer exists".to_owned(),
+                        RevalidationState::Changed => item
+                            .changed_fields
+                            .iter()
+                            .map(|field| format!("{field:?}").to_lowercase())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        RevalidationState::RevalidationFailed => item
+                            .error
+                            .clone()
+                            .unwrap_or_else(|| "unknown provider error".to_owned()),
+                    };
+                    println!(
+                        "{:<12} {:<40} {:<22} {}",
+                        item.artifact_id,
+                        item.repository,
+                        format!("{:?}", item.state).to_lowercase(),
+                        details
+                    );
                 }
             }
         }

@@ -75,6 +75,8 @@ Mutation-heavy work will be more conservative than reads: destructive execution 
 
 The immutable cleanup-plan slice is implemented. A plan contains the complete artifact snapshot for every exact deletion target, a policy fingerprint, decision totals, and projected reclaimable bytes. Plan construction refuses incomplete inventory snapshots.
 
+Remote revalidation is now implemented as a shared core service. It verifies the authenticated account first, then performs one exact artifact lookup per cleanup target without rescanning repositories or artifact collections. Exact matches are `Unchanged`; missing targets are `AlreadyAbsent`; any metadata drift is `Changed`; provider lookup failures are `RevalidationFailed`. No deletion occurs during revalidation.
+
 Deletion will continue to follow this invariant:
 
 ```text

@@ -1,8 +1,13 @@
 mod cleanup;
+mod revalidation;
 
 pub use cleanup::{
     CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,
     PlanReason,
+};
+pub use revalidation::{
+    ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
+    RevalidationState,
 };
 
 use async_trait::async_trait;
