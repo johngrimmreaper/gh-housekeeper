@@ -1410,7 +1410,10 @@ async fn run_classify_caches(
             println!("Policy:              {policy_label}");
             println!("Policy hash:         {policy_hash}");
             println!("Caches scanned:      {}", snapshot.cache_count());
-            println!("Current storage:     {}", format_bytes(snapshot.total_bytes()));
+            println!(
+                "Current storage:     {}",
+                format_bytes(snapshot.total_bytes())
+            );
             println!("Keep:                {}", report.count(Decision::Keep));
             println!("Protected:           {}", report.count(Decision::Protected));
             println!(
