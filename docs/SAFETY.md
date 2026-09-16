@@ -73,6 +73,9 @@ The `history` CLI is strictly local and read-only. It does not construct a GitHu
 
 Persistent monitoring configuration is also non-authoritative for deletion. Thresholds classify current scanned storage pressure only. Missing thresholds are reported as `unconfigured`; the application does not guess a GitHub quota. Shared `MonitoringService` is read-only: it performs inventory enumeration only and has no execution/authorization role. `status` must not describe its scoped total as official billing or account-quota usage.
 
+
+Persisted monitoring history is observational only. `MonitoringRunner` performs one read-only inventory check followed by sample persistence; it has no cleanup-plan, execution-authorization, exact-artifact lookup, or DELETE path. Persistence failure is surfaced after the read-only scan and does not trigger an automatic rescan loop. `monitor history` reads local files only and does not discover GitHub credentials or contact the network.
+
 The guarded CLI `apply` path now enforces the confirmation boundary. Interactive deletion requires stdin to be a terminal and requires the exact lowercase confirmation word `delete`. Non-interactive execution without `--yes` is refused. Automation requires a deliberate `--yes`, which creates the distinct automation authorization kind.
 
 Before asking for consent, `apply` revalidates the immutable plan and refuses any `Changed` or `RevalidationFailed` target. After consent, `ExecutionService` performs its own just-in-time exact lookup again before each possible DELETE. Zero-target plans return without prompting or mutation.

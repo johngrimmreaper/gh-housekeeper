@@ -91,6 +91,16 @@ gh-housekeeper config init \
 gh-housekeeper status
 gh-housekeeper status --owner example-user
 gh-housekeeper status --repo example-user/project-alpha --format json
+
+
+# Run exactly one scheduler-ready monitoring iteration and persist its sample.
+gh-housekeeper monitor once --repo example-user/project-alpha
+gh-housekeeper monitor once --repo example-user/project-alpha --format json
+
+# Read durable monitoring samples locally; no GitHub authentication/network required.
+gh-housekeeper monitor history
+gh-housekeeper monitor history --limit 50
+gh-housekeeper monitor history --limit 0 --format json
 ```
 
 All example owners, repositories, and artifact names in this project are fictional.
@@ -154,3 +164,6 @@ Missing configuration is safe: gh-housekeeper uses an in-memory default with a 3
 This is **scanned-scope artifact storage**, not a claim about GitHub billing, account quota, or every repository for which another owner may be charged.
 
 Monitoring orchestration now lives in the shared core as `MonitoringService`. CLI `status`, the future scheduler, tray agent, and GUI can consume the same `MonitoringReport` rather than reimplementing inventory + threshold logic.
+
+
+Durable monitoring samples live under the platform state directory in `monitoring/v1/`. `monitor once` runs one read-only scan through `MonitoringRunner`, persists the resulting `MonitoringReport`, and returns the sample path. `monitor history` reads those samples newest-first and reports corrupt/truncated records separately.
