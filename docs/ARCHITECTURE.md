@@ -19,7 +19,7 @@ Provider-neutral domain types and shared application services:
 - storage aggregation;
 - generic byte, duration, and glob helpers.
 
-Immutable cleanup-plan domain types now live here because CLI and GUI must use exactly the same behavior. Future revalidation and shared deletion-executor types belong here as well.
+Immutable cleanup-plan, revalidation, guarded execution, and storage-pressure domain types live here because CLI, GUI, scheduler, and tray agent must use exactly the same behavior. Storage threshold evaluation is provider-neutral and uses only explicit absolute thresholds supplied by configuration.
 
 ### `gh-housekeeper-github`
 
@@ -41,7 +41,7 @@ Declarative policy parsing and explainable classification. The first product def
 
 ### `gh-housekeeper-storage`
 
-Local cache, state, and audit persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store. Each execution is written as its own immutable JSON record through a temporary file, `sync_all`, and rename before it becomes visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached or historical state never authorizes a destructive operation.
+Local configuration, cache, state, and audit persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store and versioned TOML application configuration. Missing configuration produces safe in-memory defaults with monitoring thresholds unconfigured; unknown fields and invalid threshold ordering are rejected. Each audit execution is written as its own immutable JSON record through a temporary file, `sync_all`, and rename before it becomes visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached, configuration-history, or audit state never substitutes for remote revalidation authority.
 
 ### `gh-housekeeper-cli`
 
@@ -82,6 +82,8 @@ The shared core also contains a safe execution service. It requires a revalidati
 The CLI now exposes this pipeline through guarded `apply` orchestration. The CLI does not implement deletion policy itself: it parses the immutable plan, calls `RevalidationService`, presents the exact reviewed targets, establishes the explicit authorization boundary, calls `ExecutionService`, then persists the complete result through `AuditStore`. Interactive authorization requires a TTY and the exact lowercase confirmation word `delete`; automation requires an explicit `--yes`. JSON-mode review is emitted on stderr so stdout remains machine-readable.
 
 The read-only `history` command is intentionally outside the provider path. It discovers the platform state directory, reads `AuditStore`, optionally selects execution records that touched an exact repository name with case-insensitive matching, and renders table or JSON output. Repository filtering selects whole immutable audit records; it does not rewrite their target lists or turn history into remote truth.
+
+Local `config path/show/init` commands are also outside the provider path. `status` is read-only but does use `InventoryService`: it loads configured thresholds, scans the selected repository scope, sums artifact metadata in that scan, then evaluates provider-neutral storage pressure. It deliberately does not infer billing ownership or an account quota from repository accessibility.
 
 Deletion follows this invariant:
 
