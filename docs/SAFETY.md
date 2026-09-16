@@ -71,6 +71,8 @@ Execution outcomes can now be persisted in versioned audit records under the pla
 
 The `history` CLI is strictly local and read-only. It does not construct a GitHub provider, does not discover credentials, and does not contact the network. Repository filters only select persisted execution records for display; they never affect future policy classification, revalidation, authorization, or deletion eligibility.
 
+Persistent monitoring configuration is also non-authoritative for deletion. Thresholds classify current scanned storage pressure only. Missing thresholds are reported as `unconfigured`; the application does not guess a GitHub quota. `status` is a read-only inventory scan and must not describe its scoped total as official billing or account-quota usage.
+
 The guarded CLI `apply` path now enforces the confirmation boundary. Interactive deletion requires stdin to be a terminal and requires the exact lowercase confirmation word `delete`. Non-interactive execution without `--yes` is refused. Automation requires a deliberate `--yes`, which creates the distinct automation authorization kind.
 
 Before asking for consent, `apply` revalidates the immutable plan and refuses any `Changed` or `RevalidationFailed` target. After consent, `ExecutionService` performs its own just-in-time exact lookup again before each possible DELETE. Zero-target plans return without prompting or mutation.
