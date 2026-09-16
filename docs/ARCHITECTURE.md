@@ -91,7 +91,11 @@ Scheduler-ready monitoring uses dependency inversion rather than making core dep
 
 Core also provides `MonitoringScheduler<S>`. It runs `MonitoringRunner` sequentially with fixed delay after completion, so an iteration that takes longer than the requested interval cannot overlap with another scan. Success delay and failure delay are explicit non-zero durations; the current CLI uses the same interval for both, preventing a hot retry loop. A watch-channel-backed cancellation handle can stop an in-flight read-only iteration or a pending delay cleanly. The foreground `monitor watch` command wires Ctrl-C to this cancellation path and may optionally stop after a bounded number of attempts.
 
+Schedulers may be seeded with one compatible `MonitoringReport` baseline. The core verifies that the baseline matches the intended logical scan scope and exclusion set. `MonitoringHistoryStore::latest_compatible` adds the account/provider check and returns the newest compatible persisted sample while preserving any independent history-read issues. The CLI resolves the current provider/account once at watch startup, performs this local lookup, and passes the selected report into the scheduler. This makes transition state continuous across process restarts without treating persisted state as authority for deletion.
+
 Pressure changes are derived in core through `evaluate_pressure_transition`. Transition compatibility includes provider/account, logical scan scope, and the case-insensitive set of excluded repositories. Reports with scan issues are not used to assert pressure transitions. The resulting structured evaluation distinguishes first sample, incompatible series, incomplete scan, stable pressure, and changed pressure; changed transitions also record previous/current totals and whether thresholds changed.
+
+`MonitoringNotificationSignal` is a provider-neutral output derived from those transition evaluations and scheduler failures. It distinguishes no notification, entering warning/critical pressure, recovering to warning/healthy, incomplete monitoring, and monitoring failure. Scheduler events carry both the detailed transition and the notification signal so future CLI, tray, GUI, or OS notification adapters can share exactly the same classification.
 
 Deletion follows this invariant:
 
