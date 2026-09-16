@@ -440,6 +440,7 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
                     "monitoring": loaded.config.monitoring,
                     "account": report.account,
                     "scope": report.scope,
+                    "exclude_repositories": report.exclude_repositories,
                     "scanned_at": report.scanned_at,
                     "elapsed_ms": report.elapsed_ms,
                     "repository_count": report.repository_count,
