@@ -229,7 +229,7 @@ mod tests {
 
     #[derive(Clone)]
     enum FakeResponse {
-        Present(Artifact),
+        Present(Box<Artifact>),
         Absent,
         Error(String),
     }
@@ -283,7 +283,7 @@ mod tests {
             self.lookup_calls.fetch_add(1, Ordering::SeqCst);
             let key = format!("{}#{artifact_id}", repository.full_name);
             match self.responses.get(&key) {
-                Some(FakeResponse::Present(artifact)) => Ok(Some(artifact.clone())),
+                Some(FakeResponse::Present(artifact)) => Ok(Some((**artifact).clone())),
                 Some(FakeResponse::Absent) | None => Ok(None),
                 Some(FakeResponse::Error(message)) => {
                     Err(ProviderError::Transport(message.clone()))
@@ -401,7 +401,7 @@ mod tests {
             account("example-user"),
             response_map(vec![(
                 planned.clone(),
-                FakeResponse::Present(planned.clone()),
+                FakeResponse::Present(Box::new(planned.clone())),
             )]),
         ));
         let service = RevalidationService::new(provider.clone());
@@ -441,7 +441,7 @@ mod tests {
             account("example-user"),
             response_map(vec![(
                 planned.clone(),
-                FakeResponse::Present(current.clone()),
+                FakeResponse::Present(Box::new(current.clone())),
             )]),
         ));
 
@@ -493,7 +493,7 @@ mod tests {
         let provider = Arc::new(FakeProvider::new(
             account("example-user"),
             response_map(vec![
-                (first.clone(), FakeResponse::Present(first.clone())),
+                (first.clone(), FakeResponse::Present(Box::new(first.clone()))),
                 (second.clone(), FakeResponse::Absent),
             ]),
         ));
