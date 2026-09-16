@@ -236,7 +236,6 @@ pub enum PressureTransitionEvaluation {
     },
 }
 
-
 pub fn monitoring_report_matches_scan_options(
     report: &MonitoringReport,
     options: &ScanOptions,
@@ -251,7 +250,8 @@ pub fn monitoring_report_matches_context(
     account: &Account,
     options: &ScanOptions,
 ) -> bool {
-    same_account(&report.account, account) && monitoring_report_matches_scan_options(report, options)
+    same_account(&report.account, account)
+        && monitoring_report_matches_scan_options(report, options)
 }
 
 pub fn evaluate_pressure_transition(
@@ -329,7 +329,6 @@ fn normalized_exclusions(values: &[String]) -> Vec<String> {
     values
 }
 
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MonitoringNotificationSignal {
@@ -366,29 +365,32 @@ pub fn notification_signal_for_transition(
             previous_issue_count: *previous_issue_count,
             current_issue_count: *current_issue_count,
         },
-        PressureTransitionEvaluation::Changed { transition } => match (transition.from, transition.to)
-        {
-            (_, StoragePressureLevel::Critical) => {
-                MonitoringNotificationSignal::EnteredCritical {
-                    thresholds_changed: transition.thresholds_changed,
+        PressureTransitionEvaluation::Changed { transition } => {
+            match (transition.from, transition.to) {
+                (_, StoragePressureLevel::Critical) => {
+                    MonitoringNotificationSignal::EnteredCritical {
+                        thresholds_changed: transition.thresholds_changed,
+                    }
                 }
-            }
-            (StoragePressureLevel::Critical, StoragePressureLevel::Warning) => {
-                MonitoringNotificationSignal::RecoveredToWarning {
-                    thresholds_changed: transition.thresholds_changed,
+                (StoragePressureLevel::Critical, StoragePressureLevel::Warning) => {
+                    MonitoringNotificationSignal::RecoveredToWarning {
+                        thresholds_changed: transition.thresholds_changed,
+                    }
                 }
+                (
+                    StoragePressureLevel::Warning | StoragePressureLevel::Critical,
+                    StoragePressureLevel::Healthy,
+                ) => MonitoringNotificationSignal::RecoveredToHealthy {
+                    thresholds_changed: transition.thresholds_changed,
+                },
+                (_, StoragePressureLevel::Warning) => {
+                    MonitoringNotificationSignal::EnteredWarning {
+                        thresholds_changed: transition.thresholds_changed,
+                    }
+                }
+                _ => MonitoringNotificationSignal::NoNotification,
             }
-            (
-                StoragePressureLevel::Warning | StoragePressureLevel::Critical,
-                StoragePressureLevel::Healthy,
-            ) => MonitoringNotificationSignal::RecoveredToHealthy {
-                thresholds_changed: transition.thresholds_changed,
-            },
-            (_, StoragePressureLevel::Warning) => MonitoringNotificationSignal::EnteredWarning {
-                thresholds_changed: transition.thresholds_changed,
-            },
-            _ => MonitoringNotificationSignal::NoNotification,
-        },
+        }
         _ => MonitoringNotificationSignal::NoNotification,
     }
 }
@@ -1132,7 +1134,6 @@ mod tests {
         assert_eq!(provider.delete_calls.load(Ordering::SeqCst), 0);
     }
 
-
     #[test]
     fn report_context_matching_includes_account_scope_and_exclusions() {
         let mut report = monitoring_report(
@@ -1151,7 +1152,9 @@ mod tests {
             concurrency: 16,
         };
 
-        assert!(monitoring_report_matches_context(&report, &account, &options));
+        assert!(monitoring_report_matches_context(
+            &report, &account, &options
+        ));
 
         let wrong_account = Account {
             provider: "github".to_owned(),
@@ -1234,11 +1237,8 @@ mod tests {
             MonitoringService::new(provider.clone()),
             FakeSink::default(),
         );
-        let baseline = monitoring_report(
-            ScanScope::AllAccessible,
-            StoragePressureLevel::Healthy,
-            100,
-        );
+        let baseline =
+            monitoring_report(ScanScope::AllAccessible, StoragePressureLevel::Healthy, 100);
         let scheduler = MonitoringScheduler::new(
             runner,
             ScanOptions::default(),
@@ -1283,10 +1283,7 @@ mod tests {
     #[test]
     fn scheduler_rejects_baseline_for_different_scope() {
         let provider = Arc::new(FakeProvider::new(Vec::new(), BTreeMap::new()));
-        let runner = MonitoringRunner::new(
-            MonitoringService::new(provider),
-            FakeSink::default(),
-        );
+        let runner = MonitoringRunner::new(MonitoringService::new(provider), FakeSink::default());
         let scheduler = MonitoringScheduler::new(
             runner,
             ScanOptions {
