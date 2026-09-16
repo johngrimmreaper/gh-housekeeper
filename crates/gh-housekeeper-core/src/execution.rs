@@ -1,7 +1,7 @@
 use crate::{
-    changed_fields, ensure_same_account, Artifact, ArtifactField, ArtifactProvider, CleanupPlan,
-    DeleteOutcome, ProviderError, ProviderTelemetry, RevalidationError, RevalidationReport,
-    RevalidationState,
+    Artifact, ArtifactField, ArtifactProvider, CleanupPlan, DeleteOutcome, ProviderError,
+    ProviderTelemetry, RevalidationError, RevalidationReport, RevalidationState, changed_fields,
+    ensure_same_account,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -276,9 +276,7 @@ fn validate_review(
 pub enum ExecutionError {
     #[error("reviewed revalidation report does not match cleanup plan: {0}")]
     ReviewedPlanMismatch(String),
-    #[error(
-        "reviewed revalidation report is unsafe to apply ({changed} changed, {failed} failed)"
-    )]
+    #[error("reviewed revalidation report is unsafe to apply ({changed} changed, {failed} failed)")]
     UnsafeReviewedReport { changed: usize, failed: usize },
     #[error(transparent)]
     Provider(#[from] ProviderError),
@@ -298,8 +296,8 @@ mod tests {
     use std::{
         collections::BTreeMap,
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Mutex,
+            atomic::{AtomicUsize, Ordering},
         },
     };
 
@@ -384,9 +382,9 @@ mod tests {
                 Some(FakeLookup::NotFound) => {
                     Err(ProviderError::NotFound("artifact not found".to_owned()))
                 }
-                Some(FakeLookup::TransportError) => {
-                    Err(ProviderError::Transport("lookup transport failure".to_owned()))
-                }
+                Some(FakeLookup::TransportError) => Err(ProviderError::Transport(
+                    "lookup transport failure".to_owned(),
+                )),
             }
         }
 
@@ -418,9 +416,9 @@ mod tests {
                     status: 500,
                     message: "server error".to_owned(),
                 }),
-                Some(FakeDelete::TransportError) => {
-                    Err(ProviderError::Transport("delete transport failure".to_owned()))
-                }
+                Some(FakeDelete::TransportError) => Err(ProviderError::Transport(
+                    "delete transport failure".to_owned(),
+                )),
             }
         }
 
@@ -542,24 +540,14 @@ mod tests {
     fn lookup_map(entries: Vec<(Artifact, FakeLookup)>) -> BTreeMap<String, FakeLookup> {
         entries
             .into_iter()
-            .map(|(artifact, response)| {
-                (
-                    key(&artifact.repository, artifact.id),
-                    response,
-                )
-            })
+            .map(|(artifact, response)| (key(&artifact.repository, artifact.id), response))
             .collect()
     }
 
     fn delete_map(entries: Vec<(Artifact, FakeDelete)>) -> BTreeMap<String, FakeDelete> {
         entries
             .into_iter()
-            .map(|(artifact, response)| {
-                (
-                    key(&artifact.repository, artifact.id),
-                    response,
-                )
-            })
+            .map(|(artifact, response)| (key(&artifact.repository, artifact.id), response))
             .collect()
     }
 
@@ -737,11 +725,7 @@ mod tests {
             ));
 
             let report = ExecutionService::new(provider)
-                .execute(
-                    &plan,
-                    &review,
-                    ExecutionAuthorization::automation_yes(),
-                )
+                .execute(&plan, &review, ExecutionAuthorization::automation_yes())
                 .await
                 .unwrap();
 
