@@ -13,8 +13,12 @@ pub use execution::{
 };
 pub use monitoring::{
     MonitoringIteration, MonitoringIterationError, MonitoringReport, MonitoringRunner,
-    MonitoringSampleSink, MonitoringService, StoragePressureLevel, StoragePressureReport,
-    StorageThresholdError, StorageThresholds,
+    MonitoringSampleSink, MonitoringScheduler, MonitoringSchedulerCancellation,
+    MonitoringSchedulerConfigError, MonitoringSchedulerEvent, MonitoringSchedulerShutdown,
+    MonitoringSchedulerStopReason, MonitoringSchedulerSummary, MonitoringService,
+    PressureTransition, PressureTransitionEvaluation, StoragePressureLevel, StoragePressureReport,
+    StorageThresholdError, StorageThresholds, evaluate_pressure_transition,
+    monitoring_scheduler_cancellation,
 };
 pub use revalidation::{
     ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
