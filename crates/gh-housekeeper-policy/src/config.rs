@@ -1,4 +1,4 @@
-use gh_housekeeper_core::Artifact;
+use gh_housekeeper_core::{ActionsCache, Artifact};
 use globset::Glob;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -6,17 +6,46 @@ use thiserror::Error;
 
 pub const DEFAULT_KEEP_DAYS: u64 = 30;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyResource {
+    #[default]
+    Artifact,
+    Cache,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CachePolicyDefaults {
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u64,
+    #[serde(default)]
+    pub keep_unused_days: Option<u64>,
+}
+
+impl Default for CachePolicyDefaults {
+    fn default() -> Self {
+        Self {
+            keep_days: DEFAULT_KEEP_DAYS,
+            keep_unused_days: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyDefaults {
     #[serde(default = "default_keep_days")]
     pub keep_days: u64,
+    #[serde(default)]
+    pub caches: CachePolicyDefaults,
 }
 
 impl Default for PolicyDefaults {
     fn default() -> Self {
         Self {
             keep_days: DEFAULT_KEEP_DAYS,
+            caches: CachePolicyDefaults::default(),
         }
     }
 }
@@ -41,6 +70,11 @@ impl PolicyConfig {
         let mut hash = 0xcbf29ce484222325_u64;
         hash_bytes(&mut hash, b"gh-housekeeper-policy-v1");
         hash_u64(&mut hash, self.defaults.keep_days);
+        if self.defaults.caches != CachePolicyDefaults::default() {
+            hash_bytes(&mut hash, b"cache-defaults");
+            hash_u64(&mut hash, self.defaults.caches.keep_days);
+            hash_optional_u64(&mut hash, 9, self.defaults.caches.keep_unused_days);
+        }
 
         for rule in &self.rules {
             hash_bytes(&mut hash, b"rule");
@@ -52,6 +86,12 @@ impl PolicyConfig {
             hash_optional_u64(&mut hash, 6, rule.keep_days);
             hash_optional_u64(&mut hash, 7, rule.keep_latest.map(|value| value as u64));
             hash_optional_bool(&mut hash, 8, rule.protect);
+            if rule.resource == PolicyResource::Cache {
+                hash_bytes(&mut hash, b"cache-rule");
+                hash_optional_str(&mut hash, 9, rule.key.as_deref());
+                hash_optional_str(&mut hash, 10, rule.git_ref.as_deref());
+                hash_optional_u64(&mut hash, 11, rule.keep_unused_days);
+            }
         }
 
         format!("fnv1a64:{hash:016x}")
@@ -74,12 +114,35 @@ impl PolicyConfig {
                 )));
             }
 
-            if rule.keep_days.is_none() && rule.keep_latest.is_none() && rule.protect != Some(true)
+            if rule.keep_days.is_none()
+                && rule.keep_unused_days.is_none()
+                && rule.keep_latest.is_none()
+                && rule.protect != Some(true)
             {
                 return Err(PolicyError::Validation(format!(
-                    "policy rule {} has no action; set keep_days, keep_latest, or protect = true",
+                    "policy rule {} has no action; set keep_days, keep_unused_days, keep_latest, or protect = true",
                     rule.id
                 )));
+            }
+
+            match rule.resource {
+                PolicyResource::Artifact => {
+                    if rule.key.is_some() || rule.git_ref.is_some() || rule.keep_unused_days.is_some()
+                    {
+                        return Err(PolicyError::Validation(format!(
+                            "artifact policy rule {} cannot use cache-only key, ref, or keep_unused_days fields",
+                            rule.id
+                        )));
+                    }
+                }
+                PolicyResource::Cache => {
+                    if rule.workflow.is_some() || rule.artifact.is_some() || rule.branch.is_some() {
+                        return Err(PolicyError::Validation(format!(
+                            "cache policy rule {} cannot use artifact-only workflow, artifact, or branch fields",
+                            rule.id
+                        )));
+                    }
+                }
             }
 
             for (dimension, pattern) in rule.patterns() {
@@ -101,6 +164,8 @@ impl PolicyConfig {
 pub struct PolicyRule {
     pub id: String,
     #[serde(default)]
+    pub resource: PolicyResource,
+    #[serde(default)]
     pub repository: Option<String>,
     #[serde(default)]
     pub workflow: Option<String>,
@@ -109,7 +174,13 @@ pub struct PolicyRule {
     #[serde(default)]
     pub branch: Option<String>,
     #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default, rename = "ref")]
+    pub git_ref: Option<String>,
+    #[serde(default)]
     pub keep_days: Option<u64>,
+    #[serde(default)]
+    pub keep_unused_days: Option<u64>,
     #[serde(default)]
     pub keep_latest: Option<usize>,
     #[serde(default)]
@@ -121,18 +192,31 @@ impl PolicyRule {
         self.patterns().count()
     }
 
-    pub(crate) fn matches(&self, artifact: &Artifact) -> bool {
-        matches_optional_glob(
-            self.repository.as_deref(),
-            Some(&artifact.repository.full_name),
-        ) && matches_optional_glob(
-            self.workflow.as_deref(),
-            artifact
-                .workflow_run
-                .as_ref()
-                .and_then(|run| run.workflow_name.as_deref()),
-        ) && matches_optional_glob(self.artifact.as_deref(), Some(&artifact.name))
+    pub(crate) fn matches_artifact(&self, artifact: &Artifact) -> bool {
+        self.resource == PolicyResource::Artifact
+            && matches_optional_glob(
+                self.repository.as_deref(),
+                Some(&artifact.repository.full_name),
+            )
+            && matches_optional_glob(
+                self.workflow.as_deref(),
+                artifact
+                    .workflow_run
+                    .as_ref()
+                    .and_then(|run| run.workflow_name.as_deref()),
+            )
+            && matches_optional_glob(self.artifact.as_deref(), Some(&artifact.name))
             && matches_optional_glob(self.branch.as_deref(), artifact.branch())
+    }
+
+    pub(crate) fn matches_cache(&self, cache: &ActionsCache) -> bool {
+        self.resource == PolicyResource::Cache
+            && matches_optional_glob(
+                self.repository.as_deref(),
+                Some(&cache.repository.full_name),
+            )
+            && matches_optional_glob(self.key.as_deref(), Some(&cache.key))
+            && matches_optional_glob(self.git_ref.as_deref(), Some(&cache.git_ref))
     }
 
     fn patterns(&self) -> impl Iterator<Item = (&'static str, &str)> {
@@ -141,6 +225,8 @@ impl PolicyRule {
             ("workflow", self.workflow.as_deref()),
             ("artifact", self.artifact.as_deref()),
             ("branch", self.branch.as_deref()),
+            ("key", self.key.as_deref()),
+            ("ref", self.git_ref.as_deref()),
         ]
         .into_iter()
         .filter_map(|(dimension, pattern)| pattern.map(|pattern| (dimension, pattern)))
@@ -219,6 +305,8 @@ mod tests {
     #[test]
     fn ordinary_retention_defaults_to_thirty_days() {
         assert_eq!(PolicyDefaults::default().keep_days, 30);
+        assert_eq!(PolicyDefaults::default().caches.keep_days, 30);
+        assert_eq!(PolicyDefaults::default().caches.keep_unused_days, None);
     }
 
     #[test]
@@ -241,6 +329,74 @@ keep_days = 7
         assert_eq!(config.rules.len(), 1);
         assert_eq!(config.rules[0].id, "nightly-short-retention");
         assert_eq!(config.rules[0].keep_days, Some(7));
+    }
+
+    #[test]
+    fn parses_cache_defaults_and_resource_specific_rule() {
+        let config = PolicyConfig::from_toml(
+            r#"
+[defaults.caches]
+keep_days = 14
+keep_unused_days = 7
+
+[[rules]]
+id = "cache-main"
+resource = "cache"
+repository = "example-user/*"
+key = "linux-*"
+ref = "refs/heads/main"
+keep_unused_days = 3
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.defaults.keep_days, 30);
+        assert_eq!(config.defaults.caches.keep_days, 14);
+        assert_eq!(config.defaults.caches.keep_unused_days, Some(7));
+        assert_eq!(config.rules[0].resource, PolicyResource::Cache);
+        assert_eq!(config.rules[0].key.as_deref(), Some("linux-*"));
+        assert_eq!(config.rules[0].git_ref.as_deref(), Some("refs/heads/main"));
+    }
+
+    #[test]
+    fn legacy_rules_remain_artifact_rules() {
+        let config = PolicyConfig::from_toml(
+            r#"
+[[rules]]
+id = "legacy"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.rules[0].resource, PolicyResource::Artifact);
+    }
+
+    #[test]
+    fn resource_specific_fields_cannot_cross_resource_boundaries() {
+        let artifact_error = PolicyConfig::from_toml(
+            r#"
+[[rules]]
+id = "bad-artifact"
+key = "cache-*"
+keep_days = 7
+"#,
+        )
+        .unwrap_err();
+        assert!(artifact_error.to_string().contains("cache-only"));
+
+        let cache_error = PolicyConfig::from_toml(
+            r#"
+[[rules]]
+id = "bad-cache"
+resource = "cache"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap_err();
+        assert!(cache_error.to_string().contains("artifact-only"));
     }
 
     #[test]
@@ -328,7 +484,24 @@ keep_days = 8
         )
         .unwrap();
 
+        let explicit_default_cache = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[defaults.caches]
+keep_days = 30
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+
         assert_eq!(first.fingerprint(), same.fingerprint());
+        assert_eq!(first.fingerprint(), explicit_default_cache.fingerprint());
         assert_ne!(first.fingerprint(), changed.fingerprint());
         assert!(first.fingerprint().starts_with("fnv1a64:"));
     }

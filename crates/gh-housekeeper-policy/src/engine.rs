@@ -24,6 +24,10 @@ pub enum ReasonCode {
     ExplicitProtection,
     KeepLatest,
     ConflictingRetentionRules,
+    DefaultUnusedRetentionActive,
+    DefaultUnusedRetentionExpired,
+    RuleUnusedRetentionActive,
+    RuleUnusedRetentionExpired,
 }
 
 impl ReasonCode {
@@ -36,6 +40,10 @@ impl ReasonCode {
             Self::ExplicitProtection => "explicit_protection",
             Self::KeepLatest => "keep_latest",
             Self::ConflictingRetentionRules => "conflicting_retention_rules",
+            Self::DefaultUnusedRetentionActive => "default_unused_retention_active",
+            Self::DefaultUnusedRetentionExpired => "default_unused_retention_expired",
+            Self::RuleUnusedRetentionActive => "rule_unused_retention_active",
+            Self::RuleUnusedRetentionExpired => "rule_unused_retention_expired",
         }
     }
 }
@@ -120,7 +128,7 @@ impl PolicyEngine {
 
             let mut matching: Vec<&Artifact> = artifacts
                 .iter()
-                .filter(|artifact| rule.matches(artifact))
+                .filter(|artifact| rule.matches_artifact(artifact))
                 .collect();
             matching.sort_by(|a, b| {
                 b.created_at
@@ -150,7 +158,7 @@ impl PolicyEngine {
             .config
             .rules
             .iter()
-            .filter(|rule| rule.matches(artifact))
+            .filter(|rule| rule.matches_artifact(artifact))
             .collect();
 
         let protection_rules: Vec<&PolicyRule> = matching_rules
