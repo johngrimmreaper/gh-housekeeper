@@ -3,8 +3,8 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     Artifact, ArtifactProvider, CleanupPlan, ExecutionAuthorization, ExecutionService,
-    ExecutionState, InventoryService, RevalidationService, RevalidationState,
-    ScanOptions, ScanScope, StorageBucket, format_bytes, matches_glob, parse_duration,
+    ExecutionState, InventoryService, RevalidationService, RevalidationState, ScanOptions,
+    ScanScope, StorageBucket, format_bytes, matches_glob, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{PolicyConfig, PolicyEngine};
