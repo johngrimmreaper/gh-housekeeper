@@ -277,14 +277,8 @@ impl PolicyRule {
 
     pub(crate) fn matches_workflow_run(&self, run: &WorkflowRun) -> bool {
         self.resource == PolicyResource::WorkflowRun
-            && matches_optional_glob(
-                self.repository.as_deref(),
-                Some(&run.repository.full_name),
-            )
-            && matches_optional_glob(
-                self.workflow.as_deref(),
-                run.workflow_name.as_deref(),
-            )
+            && matches_optional_glob(self.repository.as_deref(), Some(&run.repository.full_name))
+            && matches_optional_glob(self.workflow.as_deref(), run.workflow_name.as_deref())
             && matches_optional_glob(self.branch.as_deref(), run.head_branch.as_deref())
             && matches_optional_glob(self.event.as_deref(), Some(&run.event))
             && matches_optional_glob(self.conclusion.as_deref(), run.conclusion.as_deref())
