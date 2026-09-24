@@ -558,9 +558,7 @@ pub struct RunPurgeStepResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunPurgeArtifactResult {
-    pub artifact_id: u64,
-    pub artifact_name: String,
-    pub planned_size_in_bytes: u64,
+    pub planned: Artifact,
     pub state: RunPurgeExecutionState,
     pub current: Option<Artifact>,
     pub error: Option<String>,
@@ -579,8 +577,10 @@ pub struct RunPurgeExecutionReport {
     pub started_at: DateTime<Utc>,
     pub completed_at: DateTime<Utc>,
     pub account: Account,
+    pub plan_schema_version: u32,
     pub plan_created_at: DateTime<Utc>,
     pub plan_scanned_at: DateTime<Utc>,
+    pub scope: ScanScope,
     pub selection: RunPurgeSelection,
     pub authorization: ExecutionAuthorizationKind,
     pub telemetry: ProviderTelemetry,
@@ -605,7 +605,7 @@ impl RunPurgeExecutionReport {
             .flat_map(|item| item.artifacts.iter())
             .filter(|artifact| artifact.state == RunPurgeExecutionState::Deleted)
             .fold(0u64, |total, artifact| {
-                total.saturating_add(artifact.planned_size_in_bytes)
+                total.saturating_add(artifact.planned.size_in_bytes)
             })
     }
 
@@ -658,8 +658,10 @@ impl RunPurgeExecutionService {
             started_at,
             completed_at: Utc::now(),
             account,
+            plan_schema_version: plan.schema_version(),
             plan_created_at: plan.created_at(),
             plan_scanned_at: plan.scanned_at(),
+            scope: plan.scope().clone(),
             selection: plan.selection().clone(),
             authorization: authorization.kind(),
             telemetry: self.provider.telemetry(),
@@ -902,9 +904,7 @@ fn artifact_result(
     error: Option<String>,
 ) -> RunPurgeArtifactResult {
     RunPurgeArtifactResult {
-        artifact_id: planned.id,
-        artifact_name: planned.name.clone(),
-        planned_size_in_bytes: planned.size_in_bytes,
+        planned: planned.clone(),
         state,
         current,
         error,
