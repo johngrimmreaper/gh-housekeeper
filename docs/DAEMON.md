@@ -186,6 +186,8 @@ Prioritize the free resources that can actually affect this account, when suppor
 
 Do not assume any service is enabled or chargeable. Fetch account plan and allowance from an authoritative supported source, or require an explicitly labeled user-configured allowance; otherwise show usage without a made-up percentage/remaining balance. GitHub's own included-usage emails and spend-blocking budgets remain useful account-level protections that the app should point users toward, not silently configure.
 
+A `UsageQuotaAlertKey` already defines the future deduplication identity as billing owner + resource ID + billing period + threshold. Durable delivery state is not implemented yet; until it is, no daemon code may claim notification deduplication across restarts.
+
 ## Current account-usage implementation checkpoint
 
 The read-only account-usage foundation now exists below the daemon layer:
@@ -195,7 +197,7 @@ The read-only account-usage foundation now exists below the daemon layer:
 - `AccountUsageHistoryStore` persists these observations under `account-usage/v1/`, independently of `monitoring/v1/`;
 - fixture tests cover personal and organization endpoint selection, distinct units/SKUs, permission denial, period/account separation, persistence, corrupt records, and credential-field absence.
 
-This checkpoint is **not** daemon delivery yet. Explicit `monitor account once` and `monitor account history` CLI surfaces now exercise the shared provider/store without starting background work. There is still no allowance percentage calculation, threshold evaluator, deduplication state, polling loop, desktop notification, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
+This checkpoint is **not** daemon delivery yet. Explicit `monitor account once` and `monitor account history` CLI surfaces now exercise the shared provider/store without starting background work. There is now a strict shared allowance/threshold evaluator, but it is not automatically attached to GitHub's plan-wide Actions allowance. There is still no persisted allowance configuration, durable deduplication state, account-usage polling loop, desktop notification, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
 
 ## Daemon status model
 
