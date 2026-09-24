@@ -2443,10 +2443,7 @@ fn print_run_purge_review(
         format!("Plan:                 {}", plan_path.display()),
         format!("Account:              {}", plan.account().login),
         format!("Runs:                 {}", plan.summary().run_count()),
-        format!(
-            "Repositories:         {}",
-            run_purge_repository_count(plan)
-        ),
+        format!("Repositories:         {}", run_purge_repository_count(plan)),
         format!("Artifacts:            {}", plan.summary().artifact_count()),
         format!(
             "Artifact storage:      {}",
@@ -3198,13 +3195,8 @@ mod tests {
         let global_phrase = run_purge_confirmation_phrase(47);
         assert_eq!(global_phrase, "purge 47 repositories");
         assert!(
-            authorize_run_purge(
-                false,
-                true,
-                Some("purge 47 repositories\n"),
-                &global_phrase
-            )
-            .is_ok()
+            authorize_run_purge(false, true, Some("purge 47 repositories\n"), &global_phrase)
+                .is_ok()
         );
         assert!(authorize_run_purge(false, true, Some("purge\n"), &global_phrase).is_err());
     }
