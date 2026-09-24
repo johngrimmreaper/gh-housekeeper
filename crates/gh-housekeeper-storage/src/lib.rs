@@ -1,6 +1,7 @@
 mod audit;
 mod config;
 mod monitoring_history;
+mod run_purge_audit;
 
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
@@ -11,6 +12,10 @@ pub use config::{
 pub use monitoring_history::{
     MONITORING_SAMPLE_SCHEMA_VERSION, MonitoringBaselineLookup, MonitoringHistory,
     MonitoringHistoryError, MonitoringHistoryStore, MonitoringReadIssue, MonitoringSample,
+};
+pub use run_purge_audit::{
+    RUN_PURGE_AUDIT_SCHEMA_VERSION, RunPurgeAuditError, RunPurgeAuditHistory,
+    RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore,
 };
 
 use std::{env, path::PathBuf};
