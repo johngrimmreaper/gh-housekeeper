@@ -512,10 +512,7 @@ impl WorkflowRunPurgeProvider for GithubClient {
         run_id: u64,
     ) -> ProviderResult<DeleteOutcome> {
         validate_full_name(&repository.full_name)?;
-        let path = format!(
-            "/repos/{}/actions/runs/{run_id}",
-            repository.full_name
-        );
+        let path = format!("/repos/{}/actions/runs/{run_id}", repository.full_name);
         match self.send_with_policy(Method::DELETE, &path, true).await? {
             Some(_) => Ok(DeleteOutcome::Deleted),
             None => Ok(DeleteOutcome::AlreadyAbsent),
