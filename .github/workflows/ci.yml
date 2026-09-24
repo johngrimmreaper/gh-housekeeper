@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [main, work/run-policy-daemon-foundation]
+    branches: [main]
   pull_request:
 
 permissions:
