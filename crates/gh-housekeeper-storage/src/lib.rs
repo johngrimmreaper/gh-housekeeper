@@ -19,7 +19,8 @@ pub use cache_purge_audit::{
     CachePurgeAuditRecord, CachePurgeAuditStore,
 };
 pub use config::{
-    AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
+    AccountUsageAllowanceConfig, AccountUsageMonitoringConfig, AppConfig, CONFIG_SCHEMA_VERSION,
+    ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
 };
 pub use monitoring_history::{
     MONITORING_SAMPLE_SCHEMA_VERSION, MonitoringBaselineLookup, MonitoringHistory,
