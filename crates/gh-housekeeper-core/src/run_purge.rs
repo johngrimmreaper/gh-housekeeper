@@ -1,6 +1,7 @@
 use crate::{
     Account, Artifact, DeleteOutcome, ExecutionAuthorization, ExecutionAuthorizationKind,
-    ProviderError, ProviderTelemetry, ScanScope, WorkflowRun, WorkflowRunInventorySnapshot,
+    ProtectionAssessment, ProviderError, ProviderTelemetry, RunProtectionError,
+    RunProtectionKey, RunProtectionSource, ScanScope, WorkflowRun, WorkflowRunInventorySnapshot,
     WorkflowRunProvider, WorkflowRunPurgeProvider,
 };
 use chrono::{DateTime, Utc};
@@ -294,11 +295,18 @@ impl RunPurgePlan {
 
 pub struct RunPurgePlanningService {
     provider: Arc<dyn WorkflowRunProvider>,
+    protections: Arc<dyn RunProtectionSource>,
 }
 
 impl RunPurgePlanningService {
-    pub fn new(provider: Arc<dyn WorkflowRunProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<dyn WorkflowRunProvider>,
+        protections: Arc<dyn RunProtectionSource>,
+    ) -> Self {
+        Self {
+            provider,
+            protections,
+        }
     }
 
     pub async fn build(
@@ -315,9 +323,18 @@ impl RunPurgePlanningService {
 
         let current_account = self.provider.account().await?;
         ensure_same_account(&snapshot.account, &current_account)?;
+        let provider_instance = self.provider.provider_instance();
+        let protections = self.protections.snapshot()?;
 
         let mut targets = Vec::with_capacity(selected_runs.len());
         for planned_run in selected_runs {
+            if should_skip_protected(
+                protections.assess(&provider_instance, &current_account, &planned_run),
+                selection.mode,
+                &planned_run,
+            )? {
+                continue;
+            }
             if let Some(remaining) = rate_limit_guard_remaining(self.provider.telemetry()) {
                 return Err(RunPurgeError::RateLimitHeadroomGuard {
                     phase: "planning",
@@ -344,6 +361,16 @@ impl RunPurgePlanningService {
                 });
             }
 
+            let key = RunProtectionKey::for_run(&provider_instance, &current_account, &planned_run);
+            let guard = self.protections.acquire(&key).await?;
+            if should_skip_protected(
+                guard.assess(&provider_instance, &current_account, &planned_run)?,
+                selection.mode,
+                &planned_run,
+            )? {
+                continue;
+            }
+
             let current_run = self
                 .provider
                 .workflow_run(&planned_run.repository, planned_run.id)
@@ -365,6 +392,14 @@ impl RunPurgePlanningService {
                 });
             }
 
+            if should_skip_protected(
+                guard.assess(&provider_instance, &current_account, &current_run)?,
+                selection.mode,
+                &current_run,
+            )? {
+                continue;
+            }
+
             let artifacts = self
                 .provider
                 .workflow_run_artifacts(&planned_run.repository, planned_run.id)
@@ -374,6 +409,14 @@ impl RunPurgePlanningService {
                     run_id: planned_run.id,
                     message: error.to_string(),
                 })?;
+
+            if should_skip_protected(
+                guard.assess(&provider_instance, &current_account, &planned_run)?,
+                selection.mode,
+                &planned_run,
+            )? {
+                continue;
+            }
 
             targets.push(RunPurgeTarget {
                 run: planned_run,
@@ -428,11 +471,18 @@ impl RunPurgeRevalidationReport {
 
 pub struct RunPurgeRevalidationService {
     provider: Arc<dyn WorkflowRunProvider>,
+    protections: Arc<dyn RunProtectionSource>,
 }
 
 impl RunPurgeRevalidationService {
-    pub fn new(provider: Arc<dyn WorkflowRunProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<dyn WorkflowRunProvider>,
+        protections: Arc<dyn RunProtectionSource>,
+    ) -> Self {
+        Self {
+            provider,
+            protections,
+        }
     }
 
     pub async fn revalidate(
@@ -442,11 +492,31 @@ impl RunPurgeRevalidationService {
         plan.validate_integrity()?;
         let account = self.provider.account().await?;
         ensure_same_account(plan.account(), &account)?;
+        let provider_instance = self.provider.provider_instance();
+        self.protections.snapshot()?;
 
         let mut items = Vec::with_capacity(plan.targets().len());
         let mut rate_limit_halt_reason: Option<String> = None;
         for target in plan.targets() {
             let planned = target.run();
+
+            let assessment = self
+                .protections
+                .snapshot()?
+                .assess(&provider_instance, &account, planned);
+            if let Some(reason) = protection_block_reason(assessment) {
+                items.push(RunPurgeRevalidationItem {
+                    repository: planned.repository.full_name.clone(),
+                    run_id: planned.id,
+                    state: RunPurgeRevalidationState::RevalidationFailed,
+                    missing_artifact_ids: Vec::new(),
+                    changed_artifact_ids: Vec::new(),
+                    unexpected_artifact_ids: Vec::new(),
+                    current_run: None,
+                    error: Some(reason),
+                });
+                continue;
+            }
 
             if let Some(reason) = &rate_limit_halt_reason {
                 items.push(RunPurgeRevalidationItem {
@@ -709,11 +779,18 @@ impl RunPurgeExecutionReport {
 
 pub struct RunPurgeExecutionService {
     provider: Arc<dyn WorkflowRunPurgeProvider>,
+    protections: Arc<dyn RunProtectionSource>,
 }
 
 impl RunPurgeExecutionService {
-    pub fn new(provider: Arc<dyn WorkflowRunPurgeProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<dyn WorkflowRunPurgeProvider>,
+        protections: Arc<dyn RunProtectionSource>,
+    ) -> Self {
+        Self {
+            provider,
+            protections,
+        }
     }
 
     pub async fn execute(
@@ -759,7 +836,7 @@ impl RunPurgeExecutionService {
                 continue;
             }
 
-            let item = self.execute_target(target).await;
+            let item = self.execute_target(target, &account).await;
             if execution_item_hit_rate_limit(&item) {
                 rate_limit_halt_reason = Some(
                     "batch halted by GitHub API rate-limit guard after provider rate limit; target was not attempted"
@@ -784,8 +861,33 @@ impl RunPurgeExecutionService {
         })
     }
 
-    async fn execute_target(&self, target: &RunPurgeTarget) -> RunPurgeExecutionItem {
+    async fn execute_target(&self, target: &RunPurgeTarget, account: &Account) -> RunPurgeExecutionItem {
         let planned = target.run();
+        let provider_instance = self.provider.provider_instance();
+        let key = RunProtectionKey::for_run(&provider_instance, account, planned);
+        let guard = match self.protections.acquire(&key).await {
+            Ok(guard) => guard,
+            Err(error) => {
+                return blocked_execution_item(
+                    target,
+                    RunPurgeExecutionState::Blocked,
+                    Some(format!("local_protection_unverifiable: {error}")),
+                );
+            }
+        };
+        let assessment = match guard.assess(&provider_instance, account, planned) {
+            Ok(assessment) => assessment,
+            Err(error) => {
+                return blocked_execution_item(
+                    target,
+                    RunPurgeExecutionState::Blocked,
+                    Some(format!("local_protection_unverifiable: {error}")),
+                );
+            }
+        };
+        if let Some(reason) = protection_block_reason(assessment) {
+            return blocked_execution_item(target, RunPurgeExecutionState::Blocked, Some(reason));
+        }
 
         let preflight_run = match self
             .provider
@@ -1076,6 +1178,44 @@ fn ensure_same_account(expected: &Account, current: &Account) -> Result<(), RunP
     }
 }
 
+fn protection_block_reason(assessment: ProtectionAssessment) -> Option<String> {
+    match assessment {
+        ProtectionAssessment::NoEntry => None,
+        ProtectionAssessment::Protected(entry) => {
+            Some(format!("local_protection: {}", entry.reason))
+        }
+        ProtectionAssessment::Review { code, explanation } => {
+            Some(format!("{}: {explanation}", code.as_str()))
+        }
+    }
+}
+
+fn should_skip_protected(
+    assessment: ProtectionAssessment,
+    mode: RunPurgeSelectionMode,
+    run: &WorkflowRun,
+) -> Result<bool, RunPurgeError> {
+    match assessment {
+        ProtectionAssessment::NoEntry => Ok(false),
+        ProtectionAssessment::Protected(entry) if mode != RunPurgeSelectionMode::ExplicitRunIds => {
+            let _ = entry;
+            Ok(true)
+        }
+        ProtectionAssessment::Protected(entry) => Err(RunPurgeError::LocallyProtected {
+            repository: run.repository.full_name.clone(),
+            run_id: run.id,
+            reason: entry.reason,
+        }),
+        ProtectionAssessment::Review { code, explanation } => {
+            Err(RunPurgeError::ProtectionUnverifiable {
+                repository: run.repository.full_name.clone(),
+                run_id: run.id,
+                reason: format!("{}: {explanation}", code.as_str()),
+            })
+        }
+    }
+}
+
 fn step(state: RunPurgeExecutionState, error: Option<String>) -> RunPurgeStepResult {
     RunPurgeStepResult { state, error }
 }
@@ -1168,6 +1308,18 @@ fn blocked_execution_item(
 
 #[derive(Debug, Error)]
 pub enum RunPurgeError {
+    #[error("workflow run {repository}#{run_id} is locally protected: {reason}")]
+    LocallyProtected {
+        repository: String,
+        run_id: u64,
+        reason: String,
+    },
+    #[error("cannot safely assess local protection of {repository}#{run_id}: {reason}")]
+    ProtectionUnverifiable {
+        repository: String,
+        run_id: u64,
+        reason: String,
+    },
     #[error(
         "cannot create a workflow-run purge plan from an incomplete snapshot ({issue_count} scan issue(s))"
     )]
@@ -1239,6 +1391,8 @@ pub enum RunPurgeError {
     UnsafeReviewedReport,
     #[error(transparent)]
     Provider(#[from] ProviderError),
+    #[error(transparent)]
+    Protection(#[from] RunProtectionError),
 }
 
 #[cfg(test)]
@@ -1251,6 +1405,46 @@ mod tests {
     use async_trait::async_trait;
     use chrono::TimeZone;
     use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeProtectionSource {
+        state: Arc<Mutex<crate::ProtectionIndex>>,
+    }
+
+    struct FakeProtectionGuard {
+        state: Arc<Mutex<crate::ProtectionIndex>>,
+    }
+
+    impl crate::RunProtectionGuard for FakeProtectionGuard {
+        fn assess(
+            &self,
+            instance: &str,
+            account: &Account,
+            run: &WorkflowRun,
+        ) -> Result<ProtectionAssessment, RunProtectionError> {
+            Ok(self.state.lock().unwrap().assess(instance, account, run))
+        }
+    }
+
+    #[async_trait]
+    impl RunProtectionSource for FakeProtectionSource {
+        fn snapshot(&self) -> Result<crate::ProtectionIndex, RunProtectionError> {
+            Ok(self.state.lock().unwrap().clone())
+        }
+
+        async fn acquire(
+            &self,
+            _key: &RunProtectionKey,
+        ) -> Result<Box<dyn crate::RunProtectionGuard>, RunProtectionError> {
+            Ok(Box::new(FakeProtectionGuard {
+                state: self.state.clone(),
+            }))
+        }
+    }
+
+    fn protections() -> Arc<FakeProtectionSource> {
+        Arc::new(FakeProtectionSource::default())
+    }
 
     fn repository() -> Repository {
         Repository {
@@ -1349,6 +1543,10 @@ mod tests {
 
     #[async_trait]
     impl WorkflowRunProvider for FakeProvider {
+        fn provider_instance(&self) -> String {
+            "test://runs".to_owned()
+        }
+
         async fn workflow_runs(
             &self,
             _repository: &Repository,
@@ -1458,7 +1656,7 @@ mod tests {
             retain_artifacts_on_delete: false,
             retain_run_on_delete: false,
         });
-        let plan = RunPurgePlanningService::new(provider.clone())
+        let plan = RunPurgePlanningService::new(provider.clone(), protections())
             .build(
                 &snapshot(vec![planned_run.clone()]),
                 vec![planned_run],
@@ -1493,7 +1691,7 @@ mod tests {
             retain_artifacts_on_delete: false,
             retain_run_on_delete: false,
         });
-        let plan = RunPurgePlanningService::new(provider.clone())
+        let plan = RunPurgePlanningService::new(provider.clone(), protections())
             .build(
                 &snapshot(vec![planned_run.clone()]),
                 vec![planned_run],
@@ -1512,7 +1710,7 @@ mod tests {
             .unwrap();
 
         provider.artifacts.lock().unwrap().push(artifact(2, 7));
-        let report = RunPurgeRevalidationService::new(provider)
+        let report = RunPurgeRevalidationService::new(provider, protections())
             .revalidate(&plan)
             .await
             .unwrap();
@@ -1532,7 +1730,7 @@ mod tests {
             retain_artifacts_on_delete: false,
             retain_run_on_delete: false,
         });
-        let plan = RunPurgePlanningService::new(provider.clone())
+        let plan = RunPurgePlanningService::new(provider.clone(), protections())
             .build(
                 &snapshot(vec![planned_run.clone()]),
                 vec![planned_run],
@@ -1549,12 +1747,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let reviewed = RunPurgeRevalidationService::new(provider.clone())
+        let reviewed = RunPurgeRevalidationService::new(provider.clone(), protections())
             .revalidate(&plan)
             .await
             .unwrap();
 
-        let report = RunPurgeExecutionService::new(provider.clone())
+        let report = RunPurgeExecutionService::new(provider.clone(), protections())
             .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
             .await
             .unwrap();
@@ -1583,7 +1781,7 @@ mod tests {
             retain_artifacts_on_delete: true,
             retain_run_on_delete: false,
         });
-        let plan = RunPurgePlanningService::new(provider.clone())
+        let plan = RunPurgePlanningService::new(provider.clone(), protections())
             .build(
                 &snapshot(vec![planned_run.clone()]),
                 vec![planned_run],
@@ -1600,12 +1798,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let reviewed = RunPurgeRevalidationService::new(provider.clone())
+        let reviewed = RunPurgeRevalidationService::new(provider.clone(), protections())
             .revalidate(&plan)
             .await
             .unwrap();
 
-        let report = RunPurgeExecutionService::new(provider.clone())
+        let report = RunPurgeExecutionService::new(provider.clone(), protections())
             .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
             .await
             .unwrap();
@@ -1635,7 +1833,7 @@ mod tests {
             retain_artifacts_on_delete: false,
             retain_run_on_delete: true,
         });
-        let plan = RunPurgePlanningService::new(provider.clone())
+        let plan = RunPurgePlanningService::new(provider.clone(), protections())
             .build(
                 &snapshot(vec![planned_run.clone()]),
                 vec![planned_run],
@@ -1652,12 +1850,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let reviewed = RunPurgeRevalidationService::new(provider.clone())
+        let reviewed = RunPurgeRevalidationService::new(provider.clone(), protections())
             .revalidate(&plan)
             .await
             .unwrap();
 
-        let report = RunPurgeExecutionService::new(provider.clone())
+        let report = RunPurgeExecutionService::new(provider.clone(), protections())
             .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
             .await
             .unwrap();
@@ -1679,6 +1877,118 @@ mod tests {
             vec!["logs:7".to_owned(), "run:7".to_owned()]
         );
         assert!(provider.current_run.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn an_old_plan_cannot_delete_a_run_protected_after_planning() {
+        let planned_run = run(7);
+        let source = protections();
+        let provider = Arc::new(FakeProvider {
+            current_run: Mutex::new(Some(planned_run.clone())),
+            artifacts: Mutex::new(vec![artifact(1, 7)]),
+            calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: false,
+        });
+        let inventory = snapshot(vec![planned_run.clone()]);
+        let selection = RunPurgeSelection {
+            mode: RunPurgeSelectionMode::AllCompleted,
+            requested_run_ids: Vec::new(),
+            older_than_seconds: None,
+            workflow: None,
+            branch: None,
+            event: None,
+            conclusion: None,
+            policy_hash: None,
+        };
+        let plan = RunPurgePlanningService::new(provider.clone(), source.clone())
+            .build(&inventory, vec![planned_run.clone()], selection)
+            .await
+            .unwrap();
+        let reviewed = RunPurgeRevalidationService::new(provider.clone(), source.clone())
+            .revalidate(&plan)
+            .await
+            .unwrap();
+        assert!(reviewed.is_safe_to_apply());
+
+        let entry = crate::RunProtection::from_verified_run(
+            "test://runs",
+            &inventory.account,
+            &planned_run,
+            "Evidence for a review".to_owned(),
+        )
+        .unwrap();
+        *source.state.lock().unwrap() = crate::ProtectionIndex::new(vec![entry]).unwrap();
+
+        let after_protection = RunPurgeRevalidationService::new(provider.clone(), source.clone())
+            .revalidate(&plan)
+            .await
+            .unwrap();
+        assert!(!after_protection.is_safe_to_apply());
+        assert!(after_protection.items[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.starts_with("local_protection:")));
+
+        // An intent could already have been recorded from the earlier safe report.
+        // The same executor must still block before deleting even the run logs.
+        let result = RunPurgeExecutionService::new(provider.clone(), source)
+            .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
+            .await
+            .unwrap();
+        assert_eq!(result.items[0].run.state, RunPurgeExecutionState::Blocked);
+        assert_eq!(result.items[0].logs.state, RunPurgeExecutionState::Blocked);
+        assert!(provider.calls.lock().unwrap().is_empty());
+        assert!(provider.current_run.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn protected_explicit_run_is_rejected_and_bulk_run_is_omitted() {
+        let planned_run = run(7);
+        let provider = Arc::new(FakeProvider {
+            current_run: Mutex::new(Some(planned_run.clone())),
+            artifacts: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: false,
+        });
+        let inventory = snapshot(vec![planned_run.clone()]);
+        let entry = crate::RunProtection::from_verified_run(
+            "test://runs",
+            &inventory.account,
+            &planned_run,
+            "Must be preserved".to_owned(),
+        )
+        .unwrap();
+        let source = protections();
+        *source.state.lock().unwrap() = crate::ProtectionIndex::new(vec![entry]).unwrap();
+        let selection = RunPurgeSelection {
+            mode: RunPurgeSelectionMode::ExplicitRunIds,
+            requested_run_ids: vec![7],
+            older_than_seconds: None,
+            workflow: None,
+            branch: None,
+            event: None,
+            conclusion: None,
+            policy_hash: None,
+        };
+        let error = RunPurgePlanningService::new(provider.clone(), source.clone())
+            .build(&inventory, vec![planned_run.clone()], selection.clone())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RunPurgeError::LocallyProtected { .. }));
+        let bulk = RunPurgePlanningService::new(provider, source)
+            .build(
+                &inventory,
+                vec![planned_run],
+                RunPurgeSelection {
+                    mode: RunPurgeSelectionMode::AllCompleted,
+                    ..selection
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(bulk.summary().run_count(), 0);
     }
 
     #[test]

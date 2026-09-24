@@ -60,6 +60,10 @@ impl WorkflowRun {
 
 #[async_trait]
 pub trait WorkflowRunProvider: RepositoryProvider {
+    /// Stable namespace for one provider installation (for example a GitHub API origin).
+    /// A protection from another installation must never match by numeric IDs alone.
+    fn provider_instance(&self) -> String;
+
     async fn workflow_runs(&self, repository: &Repository) -> ProviderResult<Vec<WorkflowRun>>;
 
     /// Look up one workflow run by its stable provider ID without mutating remote state.
@@ -257,6 +261,10 @@ mod tests {
 
     #[async_trait]
     impl WorkflowRunProvider for FakeRunProvider {
+        fn provider_instance(&self) -> String {
+            "test://runs".to_owned()
+        }
+
         async fn workflow_runs(&self, repository: &Repository) -> ProviderResult<Vec<WorkflowRun>> {
             self.requests.fetch_add(1, Ordering::Relaxed);
             match repository.name.as_str() {

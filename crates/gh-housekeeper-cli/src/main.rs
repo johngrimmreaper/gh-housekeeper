@@ -10,9 +10,10 @@ use gh_housekeeper_core::{
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, RunPurgeExecutionService,
     RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService,
-    RunPurgeSelection, RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket,
-    StoragePressureLevel, WorkflowRun, WorkflowRunInventoryService, WorkflowRunProvider,
-    WorkflowRunPurgeProvider, aggregate_caches, format_bytes, matches_glob,
+    RunPurgeSelection, RunPurgeSelectionMode, RunProtection, RunProtectionKey, RepositoryRef,
+    ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, WorkflowRun,
+    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
+    format_bytes, matches_glob,
     monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
@@ -21,7 +22,7 @@ use gh_housekeeper_storage::{
     AppConfig, AuditReadIssue, AuditRecord, AuditStore, CachePurgeAuditReadIssue,
     CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore, MonitoringConfig,
     MonitoringHistoryStore, MonitoringReadIssue, RunPurgeAuditReadIssue, RunPurgeAuditRecord,
-    RunPurgeAuditStore, StatePaths,
+    RunProtectionStore, RunPurgeAuditStore, StatePaths,
 };
 use serde_json::json;
 use std::{
@@ -186,6 +187,9 @@ enum RunSort {
 
 #[derive(Args)]
 struct RunsCommand {
+    #[command(subcommand)]
+    action: Option<RunsAction>,
+
     #[command(flatten)]
     scope: ScopeArgs,
 
@@ -215,6 +219,54 @@ struct RunsCommand {
 
     #[arg(long, help = "Only include completed workflow runs")]
     completed_only: bool,
+}
+
+#[derive(Subcommand)]
+enum RunsAction {
+    /// Persist protection of one remotely verified workflow run.
+    Protect(RunsProtectCommand),
+    /// Inspect or initialize the durable local protection list.
+    Protections(RunsProtectionsCommand),
+    /// Remove one exact local protection without contacting GitHub.
+    Unprotect(RunsUnprotectCommand),
+}
+
+#[derive(Args)]
+struct RunsProtectCommand {
+    #[arg(long)]
+    repo: String,
+    #[arg(long)]
+    run_id: u64,
+    #[arg(long)]
+    reason: String,
+}
+
+#[derive(Args)]
+struct RunsUnprotectCommand {
+    #[arg(long)]
+    repo: String,
+    #[arg(long)]
+    run_id: u64,
+    #[arg(long, help = "Disambiguate a stale repository name reused by a different repository ID")]
+    repo_id: Option<u64>,
+}
+
+#[derive(Args)]
+struct RunsProtectionsCommand {
+    #[command(subcommand)]
+    action: Option<RunsProtectionsAction>,
+    #[arg(long)]
+    repo: Option<String>,
+    #[arg(long)]
+    verify: bool,
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Subcommand)]
+enum RunsProtectionsAction {
+    /// Explicitly initialize an empty protection store for this user.
+    Init,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -763,7 +815,18 @@ async fn main() -> Result<()> {
         Command::Scan(command) => run_scan(provider()?, command).await,
         Command::Repos(command) => run_repos(provider()?, command).await,
         Command::Artifacts(command) => run_artifacts(provider()?, command).await,
-        Command::Runs(command) => run_runs(provider()?, command).await,
+        Command::Runs(mut command) => match command.action.take() {
+            Some(RunsAction::Protect(action)) => {
+                run_runs_protect(provider()?, action).await
+            }
+            Some(RunsAction::Protections(action)) => {
+                run_runs_protections(api_url.as_deref(), action).await
+            }
+            Some(RunsAction::Unprotect(action)) => {
+                run_runs_unprotect(api_url.as_deref(), action).await
+            }
+            None => run_runs(provider()?, command).await,
+        },
         Command::Caches(command) => run_caches(provider()?, command).await,
         Command::Classify(command) => match command.resource {
             ClassifyResource::Caches(command) => run_classify_caches(provider()?, command).await,
@@ -1539,6 +1602,211 @@ async fn run_artifacts(
     Ok(())
 }
 
+async fn run_runs_protect(
+    provider: Arc<dyn WorkflowRunProvider>,
+    command: RunsProtectCommand,
+) -> Result<()> {
+    if command.run_id == 0 {
+        anyhow::bail!("--run-id must be a positive exact workflow run ID");
+    }
+    let paths = StatePaths::discover()?;
+    let store = RunProtectionStore::from_paths(&paths);
+    store
+        .load_strict()
+        .context("initialize the local store with 'gh-housekeeper runs protections init'")?;
+
+    let account = provider.account().await?;
+    let repositories = provider
+        .repositories(&ScanScope::Repository(command.repo.clone()))
+        .await?;
+    let repository = repositories
+        .first()
+        .context("GitHub did not return the requested repository")?;
+    if repository.full_name != command.repo {
+        anyhow::bail!(
+            "repository name resolves to {}; use the canonical name explicitly",
+            repository.full_name
+        );
+    }
+
+    let instance = provider.provider_instance();
+    let key = RunProtectionKey {
+        provider: account.provider.clone(),
+        provider_instance: instance.clone(),
+        repository_id: repository.id,
+        run_id: command.run_id,
+    };
+    let lease = store.acquire_target(&key).await?;
+    let run = provider
+        .workflow_run(&RepositoryRef::from(repository), command.run_id)
+        .await?
+        .context("workflow run is absent; no protection was recorded")?;
+    let protection = RunProtection::from_verified_run(&instance, &account, &run, command.reason)?;
+    let outcome = lease.protect_verified(protection)?;
+    println!(
+        "{} {}#{} from gh-housekeeper",
+        match outcome {
+            gh_housekeeper_storage::ProtectOutcome::Inserted => "Protected",
+            gh_housekeeper_storage::ProtectOutcome::AlreadyProtected => "Already protected",
+        },
+        run.repository.full_name,
+        run.id
+    );
+    Ok(())
+}
+
+async fn run_runs_unprotect(api_url: Option<&str>, command: RunsUnprotectCommand) -> Result<()> {
+    let paths = StatePaths::discover()?;
+    let store = RunProtectionStore::from_paths(&paths);
+    let instance = GithubClient::normalized_api_url(api_url)?;
+    let index = store.load_strict()?;
+    let matches = index
+        .entries()
+        .iter()
+        .filter(|entry| {
+            entry.key.provider == "github"
+                && entry.key.provider_instance == instance
+                && entry.repository.full_name == command.repo
+                && entry.key.run_id == command.run_id
+                && command
+                    .repo_id
+                    .map(|id| id == entry.repository.id)
+                    .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    let Some(entry) = matches.first() else {
+        println!("No local protection for {}#{}", command.repo, command.run_id);
+        return Ok(());
+    };
+    if matches.len() > 1 {
+        anyhow::bail!("multiple local entries match; pass --repo-id to choose the exact repository");
+    }
+    let key = entry.key.clone();
+    if store.unprotect(&key).await? {
+        println!("Removed local protection for {}#{}", command.repo, command.run_id);
+    } else {
+        println!("Local protection was already absent for {}#{}", command.repo, command.run_id);
+    }
+    Ok(())
+}
+
+async fn run_runs_protections(
+    api_url: Option<&str>,
+    command: RunsProtectionsCommand,
+) -> Result<()> {
+    let paths = StatePaths::discover()?;
+    let store = RunProtectionStore::from_paths(&paths);
+    if matches!(command.action, Some(RunsProtectionsAction::Init)) {
+        if command.repo.is_some() || command.verify {
+            anyhow::bail!("'protections init' cannot be combined with --repo or --verify");
+        }
+        let path = store.initialize_empty()?;
+        println!("Initialized run protections at {}", path.display());
+        return Ok(());
+    }
+    let index = store.load_strict()?;
+    let provider: Option<Arc<dyn WorkflowRunProvider>> = if command.verify {
+        Some(build_provider(api_url)?)
+    } else {
+        None
+    };
+    let account = if let Some(provider) = &provider {
+        Some(provider.account().await?)
+    } else {
+        None
+    };
+    let mut rows = Vec::new();
+    for entry in index.entries().iter().filter(|entry| {
+        command
+            .repo
+            .as_ref()
+            .map(|repo| entry.repository.full_name == *repo)
+            .unwrap_or(true)
+    }) {
+        let (status, detail) = if let (Some(provider), Some(account)) = (&provider, &account) {
+            verify_run_protection(provider.as_ref(), account, entry).await
+        } else {
+            ("recorded", "remote identity not checked".to_owned())
+        };
+        rows.push(json!({"protection": entry, "status": status, "detail": detail}));
+    }
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&rows)?),
+        OutputFormat::Table => {
+            if rows.is_empty() {
+                println!("No local workflow-run protections matched.");
+            } else {
+                println!("{:<14} {:<40} {:<22} REASON", "RUN ID", "REPOSITORY", "STATUS");
+                for row in rows {
+                    println!(
+                        "{:<14} {:<40} {:<22} {}",
+                        row["protection"]["key"]["run_id"],
+                        row["protection"]["repository"]["full_name"].as_str().unwrap_or("?"),
+                        row["status"].as_str().unwrap_or("?"),
+                        row["protection"]["reason"].as_str().unwrap_or("?")
+                    );
+                    if command.verify && row["status"].as_str() != Some("active") {
+                        println!("  -> {}", row["detail"].as_str().unwrap_or("?"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn verify_run_protection(
+    provider: &dyn WorkflowRunProvider,
+    account: &gh_housekeeper_core::Account,
+    entry: &RunProtection,
+) -> (&'static str, String) {
+    if provider.provider_instance() != entry.key.provider_instance || *account != entry.account {
+        return ("unverifiable", "provider instance or account differs".to_owned());
+    }
+    let repository = match provider
+        .repositories(&ScanScope::Repository(entry.repository.full_name.clone()))
+        .await
+    {
+        Ok(repositories) => match repositories.into_iter().next() {
+            Some(repository) => repository,
+            None => return ("unverifiable", "repository lookup returned no result".to_owned()),
+        },
+        Err(error) => return ("unverifiable", error.to_string()),
+    };
+    if repository.id != entry.repository.id {
+        return ("identity_mismatch", "repository ID differs".to_owned());
+    }
+    if repository.full_name != entry.repository.full_name {
+        return ("repository_renamed", format!("current name: {}", repository.full_name));
+    }
+    match provider
+        .workflow_run(&RepositoryRef::from(&repository), entry.key.run_id)
+        .await
+    {
+        Ok(Some(run)) => {
+            let index = match gh_housekeeper_core::ProtectionIndex::new(vec![entry.clone()]) {
+                Ok(index) => index,
+                Err(error) => return ("unverifiable", error.to_string()),
+            };
+            match index.assess(&provider.provider_instance(), account, &run) {
+                gh_housekeeper_core::ProtectionAssessment::Protected(_) => {
+                    ("active", "exact remote identity verified".to_owned())
+                }
+                gh_housekeeper_core::ProtectionAssessment::Review { explanation, .. } => {
+                    ("identity_mismatch", explanation)
+                }
+                gh_housekeeper_core::ProtectionAssessment::NoEntry => {
+                    ("identity_mismatch", "run identity differs".to_owned())
+                }
+            }
+        }
+        Ok(None) | Err(gh_housekeeper_core::ProviderError::NotFound(_)) => {
+            ("stale_missing", "run absent from verified repository".to_owned())
+        }
+        Err(error) => ("unverifiable", error.to_string()),
+    }
+}
+
 async fn run_runs(provider: Arc<dyn WorkflowRunProvider>, command: RunsCommand) -> Result<()> {
     let snapshot = WorkflowRunInventoryService::new(provider)
         .scan(command.scope.scan_options())
@@ -1951,6 +2219,11 @@ async fn run_classify_runs(
     provider: Arc<dyn WorkflowRunProvider>,
     command: ClassifyRunsCommand,
 ) -> Result<()> {
+    let instance = provider.provider_instance();
+    let paths = StatePaths::discover()?;
+    let protections = RunProtectionStore::from_paths(&paths)
+        .load_strict()
+        .context("cannot classify runs without a valid local protection store")?;
     let snapshot = WorkflowRunInventoryService::new(provider)
         .scan(command.scope.scan_options())
         .await?;
@@ -1968,7 +2241,7 @@ async fn run_classify_runs(
 
     let engine = PolicyEngine::new(config)?;
     let policy_hash = engine.config().fingerprint();
-    let report = engine.classify_workflow_run_snapshot(&snapshot);
+    let report = engine.classify_workflow_run_snapshot(&snapshot, &protections, &instance);
 
     match command.format {
         OutputFormat::Json => {
@@ -2089,6 +2362,12 @@ async fn run_purge_plan_runs(
     provider: Arc<dyn WorkflowRunPurgeProvider>,
     command: PurgeRunsPlanCommand,
 ) -> Result<()> {
+    let paths = StatePaths::discover()?;
+    let protections = Arc::new(RunProtectionStore::from_paths(&paths));
+    let protection_index = protections
+        .load_strict()
+        .context("cannot plan workflow-run purge without a valid local protection store")?;
+    let provider_instance = provider.provider_instance();
     let selection_mode_count = usize::from(!command.run_ids.is_empty())
         + usize::from(command.all_completed)
         + usize::from(command.policy.is_some());
@@ -2148,7 +2427,11 @@ async fn run_purge_plan_runs(
             .with_context(|| format!("invalid policy file {}", policy_path.display()))?;
         let engine = PolicyEngine::new(config)?;
         let policy_hash = engine.config().fingerprint();
-        let report = engine.classify_workflow_run_snapshot(&snapshot);
+        let report = engine.classify_workflow_run_snapshot(
+            &snapshot,
+            &protection_index,
+            &provider_instance,
+        );
         let delete_identities = report.delete_identities();
         let selected = snapshot
             .runs
@@ -2280,7 +2563,8 @@ async fn run_purge_plan_runs(
         )
     };
 
-    let plan = RunPurgePlanningService::new(provider)
+    let selected_count = selected_runs.len();
+    let plan = RunPurgePlanningService::new(provider, protections)
         .build(&snapshot, selected_runs, selection)
         .await
         .context("failed to build immutable workflow-run purge plan")?;
@@ -2294,6 +2578,12 @@ async fn run_purge_plan_runs(
             println!("Purge plan:           {}", command.output.display());
             println!("Plan schema:          {}", plan.schema_version());
             println!("Runs:                 {}", plan.summary().run_count());
+            if selected_count > plan.summary().run_count() {
+                println!(
+                    "Locally protected:    {} omitted from this purge plan",
+                    selected_count - plan.summary().run_count()
+                );
+            }
             println!(
                 "Repositories:         {}",
                 run_purge_repository_count(&plan)
@@ -2744,7 +3034,9 @@ async fn run_purge_revalidate_runs(
     command: PurgeRevalidateCommand,
 ) -> Result<()> {
     let plan = read_run_purge_plan(&command.plan)?;
-    let report = RunPurgeRevalidationService::new(provider)
+    let paths = StatePaths::discover()?;
+    let protections = Arc::new(RunProtectionStore::from_paths(&paths));
+    let report = RunPurgeRevalidationService::new(provider, protections)
         .revalidate(&plan)
         .await
         .context("failed to revalidate workflow-run purge plan")?;
@@ -2794,7 +3086,9 @@ async fn run_purge_apply_runs(
     command: PurgeApplyCommand,
 ) -> Result<()> {
     let plan = read_run_purge_plan(&command.plan)?;
-    let reviewed = RunPurgeRevalidationService::new(provider.clone())
+    let paths = StatePaths::discover()?;
+    let protections = Arc::new(RunProtectionStore::from_paths(&paths));
+    let reviewed = RunPurgeRevalidationService::new(provider.clone(), protections.clone())
         .revalidate(&plan)
         .await
         .context("failed to revalidate workflow-run purge plan")?;
@@ -2855,9 +3149,6 @@ async fn run_purge_apply_runs(
         authorize_run_purge(false, true, Some(&response), &required_confirmation)?
     };
 
-    let paths = StatePaths::discover().context(
-        "refusing workflow-run purge because the local audit state directory could not be determined; no deletion was attempted",
-    )?;
     let audit_store = RunPurgeAuditStore::from_paths(&paths);
     let audit_intent = audit_store
         .append_intent(&plan, &reviewed, authorization.kind())
@@ -2865,7 +3156,7 @@ async fn run_purge_apply_runs(
             "refusing workflow-run purge because the authorized pre-mutation audit intent could not be persisted; no deletion was attempted",
         )?;
 
-    let execution = RunPurgeExecutionService::new(provider)
+    let execution = RunPurgeExecutionService::new(provider, protections)
         .execute(&plan, &reviewed, authorization)
         .await
         .with_context(|| {
@@ -4091,6 +4382,66 @@ fn format_age(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_list_syntax_remains_compatible_with_protection_subcommands() {
+        let old = Cli::try_parse_from([
+            "gh-housekeeper",
+            "runs",
+            "--repo",
+            "example/project",
+            "--completed-only",
+        ])
+        .unwrap();
+        let Command::Runs(old) = old.command else {
+            panic!("expected runs command");
+        };
+        assert!(old.action.is_none());
+        assert!(old.completed_only);
+
+        let protect = Cli::try_parse_from([
+            "gh-housekeeper",
+            "runs",
+            "protect",
+            "--repo",
+            "example/project",
+            "--run-id",
+            "123",
+            "--reason",
+            "Evidence",
+        ])
+        .unwrap();
+        let Command::Runs(protect) = protect.command else {
+            panic!("expected runs command");
+        };
+        assert!(matches!(protect.action, Some(RunsAction::Protect(_))));
+
+        let list = Cli::try_parse_from([
+            "gh-housekeeper",
+            "runs",
+            "protections",
+            "--repo",
+            "example/project",
+        ])
+        .unwrap();
+        let Command::Runs(list) = list.command else {
+            panic!("expected runs command");
+        };
+        assert!(matches!(list.action, Some(RunsAction::Protections(_))));
+
+        let init = Cli::try_parse_from(["gh-housekeeper", "runs", "protections", "init"])
+            .unwrap();
+        let Command::Runs(init) = init.command else {
+            panic!("expected runs command");
+        };
+        assert!(matches!(
+            init.action,
+            Some(RunsAction::Protections(RunsProtectionsCommand {
+                action: Some(RunsProtectionsAction::Init),
+                ..
+            }))
+        ));
+    }
 
     #[test]
     fn decision_labels_are_stable() {
