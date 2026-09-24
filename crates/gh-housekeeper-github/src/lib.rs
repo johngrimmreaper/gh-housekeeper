@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
-    Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, DeleteOutcome, ProviderError,
+    Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, CachePurgeProvider,
+    DeleteOutcome, ProviderError,
     ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
     WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
 };
@@ -428,6 +429,25 @@ impl CacheProvider for GithubClient {
                 return Ok(None);
             }
             page += 1;
+        }
+    }
+}
+
+#[async_trait]
+impl CachePurgeProvider for GithubClient {
+    async fn delete_cache(
+        &self,
+        repository: &RepositoryRef,
+        cache_id: u64,
+    ) -> ProviderResult<DeleteOutcome> {
+        validate_full_name(&repository.full_name)?;
+        let path = format!(
+            "/repos/{}/actions/caches/{cache_id}",
+            repository.full_name
+        );
+        match self.send_with_policy(Method::DELETE, &path, true).await? {
+            Some(_) => Ok(DeleteOutcome::Deleted),
+            None => Ok(DeleteOutcome::AlreadyAbsent),
         }
     }
 }
@@ -928,6 +948,31 @@ mod tests {
                 "GET /repos/example-user/project-alpha/actions/runs?per_page=100&page=2 HTTP/1.1",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn deletes_exact_actions_cache_id_through_cache_endpoint_only() {
+        let (base_url, requests, server) = spawn_http_fixture(vec!["{}".to_owned()]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let repository = RepositoryRef {
+            id: 1,
+            full_name: "example-user/project-alpha".to_owned(),
+        };
+
+        let outcome = CachePurgeProvider::delete_cache(&client, &repository, 4242)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(outcome, DeleteOutcome::Deleted);
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec!["DELETE /repos/example-user/project-alpha/actions/caches/4242 HTTP/1.1"]
+        );
+        assert!(requests.iter().all(|request| !request.contains("/releases")));
     }
 
     #[tokio::test]
