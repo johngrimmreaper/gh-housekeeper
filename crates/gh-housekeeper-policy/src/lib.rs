@@ -6,7 +6,7 @@ mod run_engine;
 
 pub use cache_engine::{CacheClassificationReport, CacheDecision};
 pub use config::{
-    CachePolicyDefaults, DEFAULT_KEEP_DAYS, PolicyConfig, PolicyDefaults, PolicyError,
+    CachePolicyDefaults, DEFAULT_KEEP_DAYS, KeepLatestBy, PolicyConfig, PolicyDefaults, PolicyError,
     PolicyResource, PolicyRule, WorkflowRunPolicyDefaults,
 };
 pub use engine::{
