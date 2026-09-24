@@ -163,9 +163,7 @@ impl PolicyEngine {
             return run_decision(run, Decision::Protected, None, reasons);
         }
 
-        if let Some(rule_ids) =
-            keep_latest.get(&(run.repository.full_name.clone(), run.id))
-        {
+        if let Some(rule_ids) = keep_latest.get(&(run.repository.full_name.clone(), run.id)) {
             let reasons = rule_ids
                 .iter()
                 .map(|rule_id| DecisionReason {
@@ -261,9 +259,7 @@ impl PolicyEngine {
                     ReasonCode::DefaultRetentionActive
                 },
                 rule_id: None,
-                explanation: format!(
-                    "default workflow-run retention is {keep_days} day(s)"
-                ),
+                explanation: format!("default workflow-run retention is {keep_days} day(s)"),
             }],
         )
     }
