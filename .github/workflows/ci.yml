@@ -24,6 +24,14 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
+      - name: Emit rustfmt patch
+        run: |
+          cargo fmt --all
+          echo FORMAT_PATCH_START
+          git diff --binary | base64 -w0
+          echo
+          echo FORMAT_PATCH_END
+
       - name: Formatting
         run: cargo fmt --all --check
 
