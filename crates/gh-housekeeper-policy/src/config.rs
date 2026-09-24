@@ -143,7 +143,9 @@ impl PolicyConfig {
                     if rule.keep_latest_by == Some(KeepLatestBy::Workflow) {
                         hash_bytes(&mut hash, b"keep-latest-by-workflow");
                     }
-                    hash_optional_u64(&mut hash, 14, rule.keep_business_days);
+                    if rule.keep_business_days.is_some() {
+                        hash_optional_u64(&mut hash, 14, rule.keep_business_days);
+                    }
                 }
             }
         }
@@ -560,6 +562,7 @@ keep_latest_by = "workflow_branch"
         )
         .unwrap();
         assert_eq!(legacy.fingerprint(), explicit_legacy.fingerprint());
+        assert_eq!(legacy.fingerprint(), "fnv1a64:cc9832a8f25b6ef3");
         assert_ne!(legacy.fingerprint(), business.fingerprint());
 
         for input in [

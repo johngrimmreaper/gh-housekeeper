@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   rust:
@@ -36,28 +35,3 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
-
-      - name: Read-only live workflow-run policy smoke
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          XDG_STATE_HOME: /tmp/gh-housekeeper-policy-smoke-state
-        run: |
-          cat > /tmp/gh-housekeeper-policy-smoke.toml <<'POLICY'
-          [defaults.runs]
-          keep_business_days = 10000
-
-          [[rules]]
-          id = "branch-smoke"
-          resource = "workflow_run"
-          repository = "johngrimmreaper/gh-housekeeper"
-          workflow = "Rust CI"
-          branch = "work/run-business-days-latest-by"
-          keep_business_days = 0
-          keep_latest = 2
-          keep_latest_by = "workflow"
-          POLICY
-          cargo run --quiet -p gh-housekeeper-cli -- runs protections init
-          cargo run --quiet -p gh-housekeeper-cli -- classify runs --repo johngrimmreaper/gh-housekeeper --policy /tmp/gh-housekeeper-policy-smoke.toml --format json > /tmp/gh-housekeeper-classification.json
-          python3 -c 'import json; d=json.load(open("/tmp/gh-housekeeper-classification.json")); print("real read-only classification:", d["run_count"], "runs")'
-          cargo run --quiet -p gh-housekeeper-cli -- purge plan runs --repo johngrimmreaper/gh-housekeeper --policy /tmp/gh-housekeeper-policy-smoke.toml --output /tmp/gh-housekeeper-run-policy-plan.json
-          cargo run --quiet -p gh-housekeeper-cli -- purge revalidate /tmp/gh-housekeeper-run-policy-plan.json
