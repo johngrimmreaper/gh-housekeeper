@@ -204,7 +204,11 @@ impl CachePurgePlanningService {
                 });
             }
 
-            if !snapshot.caches.iter().any(|candidate| candidate == &planned) {
+            if !snapshot
+                .caches
+                .iter()
+                .any(|candidate| candidate == &planned)
+            {
                 return Err(CachePurgeError::CacheNotInSnapshot {
                     repository: planned.repository.full_name.clone(),
                     cache_id: planned.id,
@@ -533,7 +537,11 @@ impl CachePurgeExecutionService {
             };
         }
 
-        match self.provider.delete_cache(&planned.repository, planned.id).await {
+        match self
+            .provider
+            .delete_cache(&planned.repository, planned.id)
+            .await
+        {
             Ok(DeleteOutcome::AlreadyAbsent) => CachePurgeExecutionItem {
                 planned: planned.clone(),
                 state: CachePurgeExecutionState::AlreadyAbsent,
@@ -602,10 +610,7 @@ fn validate_review(
     if reviewed.account != plan.account {
         return Err(CachePurgeError::AccountMismatch {
             expected: format!("{}:{}", plan.account.provider, plan.account.login),
-            current: format!(
-                "{}:{}",
-                reviewed.account.provider, reviewed.account.login
-            ),
+            current: format!("{}:{}", reviewed.account.provider, reviewed.account.login),
         });
     }
     if reviewed.items.len() != plan.targets.len() {
@@ -651,7 +656,9 @@ pub enum CachePurgeError {
     DuplicateTarget { repository: String, cache_id: u64 },
     #[error("cache purge plan summary does not match its immutable targets")]
     PlanSummaryMismatch,
-    #[error("unsupported cache purge plan schema version {found}; supported version is {supported}")]
+    #[error(
+        "unsupported cache purge plan schema version {found}; supported version is {supported}"
+    )]
     UnsupportedPlanSchema { found: u32, supported: u32 },
     #[error("cache purge plan has unexpected resource discriminator {0}")]
     WrongResource(String),
