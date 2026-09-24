@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   rust:
@@ -35,3 +36,33 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
+
+      - name: Read-only GitHub run protection smoke
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/gh-housekeeper-protection-smoke
+          SMOKE_REPOSITORY: ${{ github.repository }}
+          SMOKE_RUN_ID: ${{ github.run_id }}
+        run: |
+          cargo run --quiet -p gh-housekeeper-cli -- runs protections init
+          cargo run --quiet -p gh-housekeeper-cli -- runs protect --repo "$SMOKE_REPOSITORY" --run-id "$SMOKE_RUN_ID" --reason "Ephemeral live protection smoke"
+          cargo run --quiet -p gh-housekeeper-cli -- runs protections --repo "$SMOKE_REPOSITORY" --verify --format json > "$RUNNER_TEMP/protections.json"
+          cargo run --quiet -p gh-housekeeper-cli -- classify runs --repo "$SMOKE_REPOSITORY" --format json > "$RUNNER_TEMP/classification.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          run_id = int(os.environ['SMOKE_RUN_ID'])
+          protections = json.loads((root / 'protections.json').read_text())
+          assert any(row['protection']['key']['run_id'] == run_id and row['status'] == 'active' for row in protections)
+          decisions = json.loads((root / 'classification.json').read_text())['classification']['decisions']
+          assert any(item['run_id'] == run_id and item['decision'] == 'protected' and any(reason['code'] == 'local_protection' for reason in item['reasons']) for item in decisions)
+          print('Live run identity and protected classification verified')
+          PY
+          if cargo run --quiet -p gh-housekeeper-cli -- purge plan runs --repo "$SMOKE_REPOSITORY" --run-id "$SMOKE_RUN_ID" --output "$RUNNER_TEMP/protection-blocked.json" > "$RUNNER_TEMP/blocked.log" 2>&1; then
+            echo 'Protected explicit run unexpectedly entered a purge plan'
+            exit 1
+          fi
+          grep -qi 'protect' "$RUNNER_TEMP/blocked.log"
+          test ! -e "$RUNNER_TEMP/protection-blocked.json"
+          cargo run --quiet -p gh-housekeeper-cli -- runs unprotect --repo "$SMOKE_REPOSITORY" --run-id "$SMOKE_RUN_ID"
