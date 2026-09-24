@@ -440,7 +440,10 @@ mod tests {
         let writer_store = store.clone();
         let writer_entry = entry.clone();
         let mut writer = tokio::spawn(async move {
-            let lease = writer_store.acquire_target(&writer_entry.key).await.unwrap();
+            let lease = writer_store
+                .acquire_target(&writer_entry.key)
+                .await
+                .unwrap();
             lease.protect_verified(writer_entry).unwrap()
         });
         assert!(

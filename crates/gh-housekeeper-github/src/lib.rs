@@ -1058,8 +1058,9 @@ mod tests {
     async fn rejects_a_run_returned_with_another_repository_identity() {
         let run = r#"{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z","repository":{"id":2,"full_name":"other/project"}}"#.to_owned();
         let (base_url, requests, server) = spawn_http_fixture(vec![run]);
-        let client = GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
-            .unwrap();
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
         let repository = RepositoryRef {
             id: 1,
             full_name: "example-user/project-alpha".to_owned(),
