@@ -23,7 +23,7 @@ const GITHUB_API_VERSION: &str = "2026-03-10";
 const DEFAULT_API_URL: &str = "https://api.github.com";
 const PER_PAGE: usize = 100;
 const RATE_UNKNOWN: u64 = u64::MAX;
-const MUTATION_PACING: Duration = Duration::from_secs(1);
+const MUTATION_PACING: Duration = Duration::from_secs(2);
 
 pub struct SecretToken(String);
 
@@ -1041,8 +1041,8 @@ mod tests {
 
         let second_delete = client.reserve_mutation_delay(&Method::DELETE);
         assert!(
-            second_delete >= Duration::from_millis(900),
-            "second mutation should be reserved about one second later, got {second_delete:?}"
+            second_delete >= Duration::from_millis(1900),
+            "second mutation should be reserved about two seconds later, got {second_delete:?}"
         );
     }
 
