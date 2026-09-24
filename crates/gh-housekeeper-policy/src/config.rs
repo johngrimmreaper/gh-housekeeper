@@ -596,9 +596,43 @@ keep_days = 7
         )
         .unwrap();
 
+        let explicit_default_runs = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[defaults.runs]
+keep_days = 30
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+
+        let changed_run_default = PolicyConfig::from_toml(
+            r#"
+[defaults]
+keep_days = 30
+
+[defaults.runs]
+keep_days = 2
+
+[[rules]]
+id = "nightly"
+artifact = "nightly-*"
+keep_days = 7
+"#,
+        )
+        .unwrap();
+
         assert_eq!(first.fingerprint(), same.fingerprint());
         assert_eq!(first.fingerprint(), explicit_default_cache.fingerprint());
+        assert_eq!(first.fingerprint(), explicit_default_runs.fingerprint());
         assert_ne!(first.fingerprint(), changed.fingerprint());
+        assert_ne!(first.fingerprint(), changed_run_default.fingerprint());
         assert!(first.fingerprint().starts_with("fnv1a64:"));
     }
 
