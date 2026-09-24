@@ -1,4 +1,6 @@
-use crate::{Decision, DecisionReason, KeepLatestBy, PolicyEngine, PolicyRule, ReasonCode, DEFAULT_KEEP_DAYS};
+use crate::{
+    DEFAULT_KEEP_DAYS, Decision, DecisionReason, KeepLatestBy, PolicyEngine, PolicyRule, ReasonCode,
+};
 use chrono::{Datelike, Days, Weekday};
 use gh_housekeeper_core::{
     ProtectionAssessment, ProtectionIndex, ProtectionReviewCode, WorkflowRun,
@@ -279,7 +281,8 @@ impl PolicyEngine {
                                 (Some(days), None) => RunRetention::ElapsedDays(days),
                                 (None, Some(days)) => RunRetention::BusinessDays(days),
                                 _ => unreachable!("validated workflow-run retention"),
-                            }.describe()
+                            }
+                            .describe()
                         ),
                     })
                     .collect();
@@ -303,7 +306,8 @@ impl PolicyEngine {
                     rule_id: Some(rule.id.clone()),
                     explanation: format!(
                         "effective workflow-run retention is {} because of policy rule {}",
-                        retention.describe(), rule.id
+                        retention.describe(),
+                        rule.id
                     ),
                 })
                 .collect();
@@ -315,7 +319,7 @@ impl PolicyEngine {
                 } else {
                     Decision::Keep
                 },
-                retention,
+                Some(retention),
                 reasons,
             );
         }
@@ -333,7 +337,7 @@ impl PolicyEngine {
             } else {
                 Decision::Keep
             },
-            retention,
+            Some(retention),
             vec![DecisionReason {
                 code: if expired {
                     ReasonCode::DefaultRetentionExpired
@@ -353,7 +357,9 @@ fn workflow_run_retention_expired(
     retention: RunRetention,
 ) -> bool {
     match retention {
-        RunRetention::ElapsedDays(days) => run.age_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY),
+        RunRetention::ElapsedDays(days) => {
+            run.age_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY)
+        }
         RunRetention::BusinessDays(days) => business_day_deadline(run.created_at, days)
             .is_some_and(|deadline| scanned_at >= deadline),
     }
@@ -395,8 +401,14 @@ fn run_decision(
         event: run.event.clone(),
         conclusion: run.conclusion.clone(),
         decision: value,
-        effective_keep_days: match retention { Some(RunRetention::ElapsedDays(days)) => Some(days), _ => None },
-        effective_keep_business_days: match retention { Some(RunRetention::BusinessDays(days)) => Some(days), _ => None },
+        effective_keep_days: match retention {
+            Some(RunRetention::ElapsedDays(days)) => Some(days),
+            _ => None,
+        },
+        effective_keep_business_days: match retention {
+            Some(RunRetention::BusinessDays(days)) => Some(days),
+            _ => None,
+        },
         reasons,
     }
 }
@@ -569,62 +581,125 @@ keep_latest = 2
         assert_eq!(business_day_deadline(friday, 0), Some(friday));
         assert_eq!(business_day_deadline(friday, 1), Some(monday));
         assert_eq!(business_day_deadline(friday, 2), Some(tuesday));
-        assert_eq!(business_day_deadline(friday, 5), Some(Utc.with_ymd_and_hms(2026, 1, 9, 16, 30, 0).unwrap()));
-        assert_eq!(business_day_deadline(friday, 6), Some(Utc.with_ymd_and_hms(2026, 1, 12, 16, 30, 0).unwrap()));
-        assert_eq!(business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 3, 16, 30, 0).unwrap(), 1), Some(monday));
-        assert_eq!(business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 4, 16, 30, 0).unwrap(), 2), Some(tuesday));
+        assert_eq!(
+            business_day_deadline(friday, 5),
+            Some(Utc.with_ymd_and_hms(2026, 1, 9, 16, 30, 0).unwrap())
+        );
+        assert_eq!(
+            business_day_deadline(friday, 6),
+            Some(Utc.with_ymd_and_hms(2026, 1, 12, 16, 30, 0).unwrap())
+        );
+        assert_eq!(
+            business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 3, 16, 30, 0).unwrap(), 1),
+            Some(monday)
+        );
+        assert_eq!(
+            business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 4, 16, 30, 0).unwrap(), 2),
+            Some(tuesday)
+        );
         assert_eq!(business_day_deadline(friday, u64::MAX), None);
     }
 
     #[test]
     fn business_day_policy_keeps_friday_run_through_monday() {
-        let mut item = run(11, "example-user/project-alpha", 10, "temporary", "completed", 2);
+        let mut item = run(
+            11,
+            "example-user/project-alpha",
+            10,
+            "temporary",
+            "completed",
+            2,
+        );
         item.created_at = Utc.with_ymd_and_hms(2026, 1, 2, 16, 30, 0).unwrap();
         let config = PolicyConfig::from_toml("[defaults.runs]\nkeep_business_days = 2\n").unwrap();
         let engine = PolicyEngine::new(config).unwrap();
         let mut inventory = snapshot(vec![item]);
         for (hour, minute, expected) in [(16, 29, Decision::Keep), (16, 30, Decision::Keep)] {
             inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 5, hour, minute, 0).unwrap();
-            assert_eq!(engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs").decisions[0].decision, expected);
+            assert_eq!(
+                engine
+                    .classify_workflow_run_snapshot(
+                        &inventory,
+                        &ProtectionIndex::default(),
+                        "test://runs"
+                    )
+                    .decisions[0]
+                    .decision,
+                expected
+            );
         }
         inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 6, 16, 29, 59).unwrap();
-        assert_eq!(engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs").delete_count(), 0);
+        assert_eq!(
+            engine
+                .classify_workflow_run_snapshot(
+                    &inventory,
+                    &ProtectionIndex::default(),
+                    "test://runs"
+                )
+                .delete_count(),
+            0
+        );
         inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 6, 16, 30, 0).unwrap();
-        let report = engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
-        assert_eq!(report.delete_identities(), BTreeSet::from([("example-user/project-alpha".to_owned(), 11)]));
+        let report = engine.classify_workflow_run_snapshot(
+            &inventory,
+            &ProtectionIndex::default(),
+            "test://runs",
+        );
+        assert_eq!(
+            report.delete_identities(),
+            BTreeSet::from([("example-user/project-alpha".to_owned(), 11)])
+        );
         assert_eq!(report.decisions[0].effective_keep_business_days, Some(2));
         assert_eq!(report.decisions[0].effective_keep_days, None);
     }
 
     #[test]
     fn rule_retention_replaces_default_mode_and_conflicting_rules_require_review() {
-        let mut inventory = snapshot(vec![run(1, "example-user/project-alpha", 10, "main", "completed", 2)]);
+        let mut inventory = snapshot(vec![run(
+            1,
+            "example-user/project-alpha",
+            10,
+            "main",
+            "completed",
+            2,
+        )]);
         inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 5, 1, 0, 0).unwrap();
-        let config = PolicyConfig::from_toml(r#"
+        let config = PolicyConfig::from_toml(
+            r#"
 [defaults.runs]
 keep_business_days = 2
 [[rules]]
 id = "elapsed"
 resource = "workflow_run"
 keep_days = 1
-"#).unwrap();
-        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+"#,
+        )
+        .unwrap();
+        let report = PolicyEngine::new(config)
+            .unwrap()
+            .classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
         assert_eq!(report.delete_count(), 1);
         assert_eq!(report.decisions[0].effective_keep_days, Some(1));
 
-        let config = PolicyConfig::from_toml(r#"
+        let config = PolicyConfig::from_toml(
+            r#"
 [defaults.runs]
 keep_days = 1
 [[rules]]
 id = "business"
 resource = "workflow_run"
 keep_business_days = 2
-"#).unwrap();
-        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+"#,
+        )
+        .unwrap();
+        let report = PolicyEngine::new(config)
+            .unwrap()
+            .classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
         assert_eq!(report.delete_count(), 0);
         assert_eq!(report.decisions[0].effective_keep_business_days, Some(2));
 
-        let config = PolicyConfig::from_toml(r#"
+        let config = PolicyConfig::from_toml(
+            r#"
 [[rules]]
 id = "elapsed"
 resource = "workflow_run"
@@ -633,14 +708,19 @@ keep_days = 2
 id = "business"
 resource = "workflow_run"
 keep_business_days = 2
-"#).unwrap();
-        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+"#,
+        )
+        .unwrap();
+        let report = PolicyEngine::new(config)
+            .unwrap()
+            .classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
         assert_eq!(report.decisions[0].decision, Decision::ManualReview);
     }
 
     #[test]
     fn workflow_grouping_counts_across_ephemeral_branches_with_deterministic_ties() {
-        let config = PolicyConfig::from_toml(r#"
+        let config = PolicyConfig::from_toml(
+            r#"
 [defaults.runs]
 keep_days = 1
 [[rules]]
@@ -648,22 +728,74 @@ id = "two-per-workflow"
 resource = "workflow_run"
 keep_latest = 2
 keep_latest_by = "workflow"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let mut runs = vec![
-            run(1, "example-user/project-alpha", 10, "feature-a", "completed", 1),
-            run(2, "example-user/project-alpha", 10, "feature-b", "completed", 1),
-            run(3, "example-user/project-alpha", 10, "feature-c", "completed", 1),
-            run(4, "example-user/project-alpha", 20, "feature-d", "completed", 1),
-            run(5, "example-user/project-beta", 10, "feature-e", "completed", 1),
-            run(6, "example-user/project-alpha", 10, "feature-f", "in_progress", 1),
+            run(
+                1,
+                "example-user/project-alpha",
+                10,
+                "feature-a",
+                "completed",
+                1,
+            ),
+            run(
+                2,
+                "example-user/project-alpha",
+                10,
+                "feature-b",
+                "completed",
+                1,
+            ),
+            run(
+                3,
+                "example-user/project-alpha",
+                10,
+                "feature-c",
+                "completed",
+                1,
+            ),
+            run(
+                4,
+                "example-user/project-alpha",
+                20,
+                "feature-d",
+                "completed",
+                1,
+            ),
+            run(
+                5,
+                "example-user/project-beta",
+                10,
+                "feature-e",
+                "completed",
+                1,
+            ),
+            run(
+                6,
+                "example-user/project-alpha",
+                10,
+                "feature-f",
+                "in_progress",
+                1,
+            ),
         ];
         runs[0].updated_at = runs[1].updated_at;
         runs[0].run_number = runs[1].run_number;
         let inventory = snapshot(runs);
-        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
-        assert_eq!(report.delete_identities(), BTreeSet::from([("example-user/project-alpha".to_owned(), 1)]));
+        let report = PolicyEngine::new(config)
+            .unwrap()
+            .classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(
+            report.delete_identities(),
+            BTreeSet::from([("example-user/project-alpha".to_owned(), 1)])
+        );
         assert_eq!(report.decisions[5].decision, Decision::Keep);
-        assert_eq!(report.decisions[5].reasons[0].code, ReasonCode::RunNotCompleted);
+        assert_eq!(
+            report.decisions[5].reasons[0].code,
+            ReasonCode::RunNotCompleted
+        );
     }
 
     #[test]

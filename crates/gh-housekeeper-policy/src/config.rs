@@ -109,7 +109,10 @@ impl PolicyConfig {
             || self.defaults.runs.keep_business_days.is_some()
         {
             hash_bytes(&mut hash, b"workflow-run-defaults");
-            hash_u64(&mut hash, self.defaults.runs.keep_days.unwrap_or(DEFAULT_KEEP_DAYS));
+            hash_u64(
+                &mut hash,
+                self.defaults.runs.keep_days.unwrap_or(DEFAULT_KEEP_DAYS),
+            );
             if self.defaults.runs.keep_business_days.is_some() {
                 hash_optional_u64(&mut hash, 14, self.defaults.runs.keep_business_days);
             }
@@ -149,8 +152,7 @@ impl PolicyConfig {
     }
 
     pub fn validate(&self) -> Result<(), PolicyError> {
-        if self.defaults.runs.keep_days.is_some()
-            && self.defaults.runs.keep_business_days.is_some()
+        if self.defaults.runs.keep_days.is_some() && self.defaults.runs.keep_business_days.is_some()
         {
             return Err(PolicyError::Validation(
                 "defaults.runs cannot combine keep_days and keep_business_days".to_owned(),
@@ -520,7 +522,8 @@ keep_days = 7
 
     #[test]
     fn business_days_and_latest_grouping_validate_without_changing_legacy_fingerprints() {
-        let business = PolicyConfig::from_toml(r#"
+        let business = PolicyConfig::from_toml(
+            r#"
 [defaults.runs]
 keep_business_days = 2
 [[rules]]
@@ -528,23 +531,34 @@ id = "all-branches"
 resource = "workflow_run"
 keep_latest = 2
 keep_latest_by = "workflow"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(business.defaults.runs.keep_business_days, Some(2));
-        assert_eq!(business.rules[0].keep_latest_by, Some(KeepLatestBy::Workflow));
+        assert_eq!(
+            business.rules[0].keep_latest_by,
+            Some(KeepLatestBy::Workflow)
+        );
 
-        let legacy = PolicyConfig::from_toml(r#"
+        let legacy = PolicyConfig::from_toml(
+            r#"
 [[rules]]
 id = "all-branches"
 resource = "workflow_run"
 keep_latest = 2
-"#).unwrap();
-        let explicit_legacy = PolicyConfig::from_toml(r#"
+"#,
+        )
+        .unwrap();
+        let explicit_legacy = PolicyConfig::from_toml(
+            r#"
 [[rules]]
 id = "all-branches"
 resource = "workflow_run"
 keep_latest = 2
 keep_latest_by = "workflow_branch"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         assert_eq!(legacy.fingerprint(), explicit_legacy.fingerprint());
         assert_ne!(legacy.fingerprint(), business.fingerprint());
 
@@ -556,7 +570,10 @@ keep_latest_by = "workflow_branch"
             "[[rules]]\nid = 'x'\nkeep_business_days = 2\n",
             "[[rules]]\nid = 'x'\nresource = 'workflow_run'\nkeep_latest = 2\nkeep_latest_by = 'repository'\n",
         ] {
-            assert!(PolicyConfig::from_toml(input).is_err(), "accepted invalid policy: {input}");
+            assert!(
+                PolicyConfig::from_toml(input).is_err(),
+                "accepted invalid policy: {input}"
+            );
         }
     }
 
