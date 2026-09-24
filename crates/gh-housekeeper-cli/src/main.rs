@@ -739,10 +739,16 @@ async fn main() -> Result<()> {
         Command::Purge(command) => match command.action {
             PurgeAction::Plan(command) => match command.resource {
                 PurgePlanResource::Runs(command) => run_purge_plan_runs(provider()?, command).await,
+                PurgePlanResource::Caches(command) => {
+                    run_purge_plan_caches(provider()?, command).await
+                }
             },
-            PurgeAction::Revalidate(command) => run_purge_revalidate(provider()?, command).await,
-            PurgeAction::Apply(command) => run_purge_apply(provider()?, command).await,
-            PurgeAction::History(command) => run_purge_history(command),
+            PurgeAction::Revalidate(command) => run_purge_revalidate_any(provider()?, command).await,
+            PurgeAction::Apply(command) => run_purge_apply_any(provider()?, command).await,
+            PurgeAction::History(command) => match command.resource {
+                PurgeHistoryResource::Runs => run_purge_history_runs(command),
+                PurgeHistoryResource::Caches => run_purge_history_caches(command),
+            },
         },
         Command::History(command) => run_history(command),
         Command::Config(command) => run_config(command),
@@ -2156,7 +2162,7 @@ async fn run_purge_plan_runs(
     Ok(())
 }
 
-async fn run_purge_revalidate(
+async fn run_purge_revalidate_runs(
     provider: Arc<dyn WorkflowRunProvider>,
     command: PurgeRevalidateCommand,
 ) -> Result<()> {
@@ -2206,7 +2212,7 @@ async fn run_purge_revalidate(
     Ok(())
 }
 
-async fn run_purge_apply(
+async fn run_purge_apply_runs(
     provider: Arc<dyn WorkflowRunPurgeProvider>,
     command: PurgeApplyCommand,
 ) -> Result<()> {
@@ -2386,7 +2392,7 @@ async fn run_purge_apply(
     Ok(())
 }
 
-fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
+fn run_purge_history_runs(command: PurgeHistoryCommand) -> Result<()> {
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
     let history = RunPurgeAuditStore::from_paths(&paths)
         .read_all()
