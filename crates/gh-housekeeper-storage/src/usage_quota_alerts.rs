@@ -219,8 +219,17 @@ impl UsageQuotaAlertStore {
         let history = fs::read_dir(&self.directory).ok()?;
         for entry in history.flatten() {
             let path = entry.path();
-            let bytes = fs::read(&path).ok()?;
-            let candidate = serde_json::from_slice::<UsageQuotaAlertReceipt>(&bytes).ok()?;
+            if path.extension().and_then(|extension| extension.to_str()) != Some("json")
+                || !path.is_file()
+            {
+                continue;
+            }
+            let Ok(bytes) = fs::read(&path) else {
+                continue;
+            };
+            let Ok(candidate) = serde_json::from_slice::<UsageQuotaAlertReceipt>(&bytes) else {
+                continue;
+            };
             if candidate == *receipt {
                 return Some(path);
             }
