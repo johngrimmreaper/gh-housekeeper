@@ -104,7 +104,7 @@ No destructive live validation should use valuable existing project artifacts or
 
 Workflow-run purge uses its own immutable plan and audit types. It does not reinterpret an artifact `CleanupPlan` as a run deletion request.
 
-A run may enter a purge plan only when its snapshotted status is `completed`. Bulk selection is never implicit: callers must provide exact `--run-id` values or explicitly request `--all-completed`. Destructive scope is also never implicit: workflow-run purge planning requires `--repo`, `--owner`, or the explicit account-wide `--all-repositories` flag. `--all-repositories` resolves to repositories owned by the authenticated account; it does not silently include collaborator or organization-member repositories merely because they are accessible. Optional workflow/branch/event/conclusion/age filters may narrow all-completed selection, but they do not replace exact IDs inside the resulting plan.
+A run may enter a purge plan only when its snapshotted status is `completed`. Selection is never implicit: callers must provide exact `--run-id` values, explicitly request `--all-completed`, or explicitly supply `--policy PATH`. Policy mode classifies the complete workflow-run snapshot and selects only exact completed runs whose structured decision is `Delete`; active runs are always retained, `Protected`/`Keep`/`ManualReview` decisions never become purge targets, and the immutable plan records the policy fingerprint. Destructive scope is also never implicit: workflow-run purge planning requires `--repo`, `--owner`, or the explicit account-wide `--all-repositories` flag. `--all-repositories` resolves to repositories owned by the authenticated account; it does not silently include collaborator or organization-member repositories merely because they are accessible. Optional workflow/branch/event/conclusion/age filters may narrow all-completed selection, but they do not replace exact IDs inside the resulting plan.
 
 Planning refuses incomplete repository/run inventory and then exact-lookups each selected run before snapshotting its run-scoped artifacts. If the run changes or disappears during this dependency-snapshot phase, the plan is not silently retargeted.
 
@@ -138,6 +138,16 @@ Workflow-run purge intent and execution records live under the separate versione
 A destructive recommendation without a structured explanation is not sufficient. Policy output must identify the decision, reason code(s), applicable rule identifier(s), and human-readable explanation.
 
 Conflicts that cannot safely be resolved become `ManualReview` rather than an implicit deletion.
+
+## Daemon and automation safety
+
+Long-running daemon operation does not create a new deletion authority. Monitoring thresholds and notification signals remain observational; entering warning or critical pressure cannot by itself authorize cleanup.
+
+The initial daemon protocol is deliberately non-destructive. It exposes status, run-monitoring-now, graceful shutdown, and notification/status events. Automatic cleanup defaults to disabled, and the initial capability set does not advertise destructive cleanup.
+
+Future daemon automation must call the same shared policy, immutable planning, revalidation, authorization, write-ahead intent, mutation, verification, and audit services used by direct CLI operation. D-Bus, tray, GUI, service-manager, or other IPC/process integrations are transport and presentation layers only. A transport request must never contain or infer an unchecked replacement deletion target.
+
+A GUI may offer to start a missing user-owned daemon after explicit user consent. It must not silently start a privileged/system daemon, and closing the GUI must not silently terminate a separately-running daemon unless the user explicitly requests shutdown.
 
 ## Actions-cache purge safety
 
