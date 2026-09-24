@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
-    Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, CachePurgeProvider,
-    DeleteOutcome, ProviderError, ProviderResult, ProviderTelemetry, Repository, RepositoryRef,
-    ScanScope, Visibility, WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider,
-    WorkflowRunRef,
+    Account, AccountUsageItem, AccountUsageObservation, AccountUsageProvider, AccountUsageSource,
+    AccountUsageUnknownReason, ActionsCache, Artifact, ArtifactProvider, BillingOwner,
+    BillingOwnerKind, BillingPeriod, CacheProvider, CachePurgeProvider, DeleteOutcome, ProviderError,
+    ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
+    WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -376,6 +377,64 @@ impl ArtifactProvider for GithubClient {
     }
 }
 
+
+#[async_trait]
+impl AccountUsageProvider for GithubClient {
+    async fn billing_usage_summary(
+        &self,
+        owner: &BillingOwner,
+        period: BillingPeriod,
+    ) -> AccountUsageObservation {
+        let observed_at = Utc::now();
+        let endpoint = match billing_usage_summary_endpoint(owner) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                return AccountUsageObservation::unknown(
+                    owner.clone(),
+                    period,
+                    observed_at,
+                    github_billing_usage_source("billing-usage-summary"),
+                    AccountUsageUnknownReason::InvalidResponse,
+                    error.to_string(),
+                );
+            }
+        };
+        let source = github_billing_usage_source(&endpoint);
+        let path = format!(
+            "{endpoint}?year={}&month={}",
+            period.year, period.month
+        );
+
+        match self.get_json::<GithubBillingUsageSummary>(&path).await {
+            Ok(summary) => match summary.into_domain(owner, period) {
+                Ok(items) => AccountUsageObservation::available(
+                    owner.clone(),
+                    period,
+                    observed_at,
+                    source,
+                    items,
+                ),
+                Err(message) => AccountUsageObservation::unknown(
+                    owner.clone(),
+                    period,
+                    observed_at,
+                    source,
+                    AccountUsageUnknownReason::InvalidResponse,
+                    message,
+                ),
+            },
+            Err(error) => AccountUsageObservation::unknown(
+                owner.clone(),
+                period,
+                observed_at,
+                source,
+                account_usage_unknown_reason(&error),
+                error.to_string(),
+            ),
+        }
+    }
+}
+
 #[async_trait]
 impl CacheProvider for GithubClient {
     async fn caches(&self, repository: &Repository) -> ProviderResult<Vec<ActionsCache>> {
@@ -600,6 +659,64 @@ impl WorkflowRunPurgeProvider for GithubClient {
     }
 }
 
+
+fn billing_usage_summary_endpoint(owner: &BillingOwner) -> ProviderResult<String> {
+    if !owner.provider.eq_ignore_ascii_case("github") {
+        return Err(ProviderError::InvalidResponse(format!(
+            "GitHub billing provider cannot query provider {:?}",
+            owner.provider
+        )));
+    }
+    validate_account_login(&owner.login)?;
+
+    Ok(match owner.kind {
+        BillingOwnerKind::User => {
+            format!("/users/{}/settings/billing/usage/summary", owner.login)
+        }
+        BillingOwnerKind::Organization => {
+            format!(
+                "/organizations/{}/settings/billing/usage/summary",
+                owner.login
+            )
+        }
+    })
+}
+
+fn github_billing_usage_source(endpoint: &str) -> AccountUsageSource {
+    AccountUsageSource {
+        provider: "github".to_owned(),
+        endpoint: endpoint.to_owned(),
+        api_version: Some(GITHUB_API_VERSION.to_owned()),
+        public_preview: true,
+    }
+}
+
+fn account_usage_unknown_reason(error: &ProviderError) -> AccountUsageUnknownReason {
+    match error {
+        ProviderError::Authentication(_) => AccountUsageUnknownReason::Authentication,
+        ProviderError::PermissionDenied(_) => AccountUsageUnknownReason::PermissionDenied,
+        ProviderError::NotFound(_) => AccountUsageUnknownReason::NotFound,
+        ProviderError::RateLimited { .. } => AccountUsageUnknownReason::RateLimited,
+        ProviderError::Transport(_) => AccountUsageUnknownReason::Transport,
+        ProviderError::InvalidResponse(_) => AccountUsageUnknownReason::InvalidResponse,
+        ProviderError::HttpStatus { .. } => AccountUsageUnknownReason::ProviderError,
+    }
+}
+
+fn validate_account_login(login: &str) -> ProviderResult<()> {
+    if !login.is_empty()
+        && login
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
+        return Ok(());
+    }
+
+    Err(ProviderError::InvalidResponse(format!(
+        "invalid GitHub account login for billing endpoint: {login:?}"
+    )))
+}
+
 fn validate_full_name(full_name: &str) -> ProviderResult<()> {
     match full_name.split_once('/') {
         Some((owner, repository)) if !owner.is_empty() && !repository.is_empty() => Ok(()),
@@ -645,6 +762,97 @@ fn github_error_message(body: &str) -> String {
     }
 
     body.chars().take(512).collect()
+}
+
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubBillingUsageSummary {
+    time_period: GithubBillingTimePeriod,
+    user: Option<String>,
+    organization: Option<String>,
+    usage_items: Vec<GithubBillingUsageItem>,
+}
+
+impl GithubBillingUsageSummary {
+    fn into_domain(
+        self,
+        owner: &BillingOwner,
+        requested_period: BillingPeriod,
+    ) -> Result<Vec<AccountUsageItem>, String> {
+        if self.time_period.year != requested_period.year {
+            return Err(format!(
+                "billing usage summary returned year {}, requested {}",
+                self.time_period.year, requested_period.year
+            ));
+        }
+        if let Some(month) = self.time_period.month
+            && month != requested_period.month
+        {
+            return Err(format!(
+                "billing usage summary returned month {month}, requested {}",
+                requested_period.month
+            ));
+        }
+
+        let reported_owner = match owner.kind {
+            BillingOwnerKind::User => self.user.as_deref(),
+            BillingOwnerKind::Organization => self.organization.as_deref(),
+        };
+        if let Some(reported_owner) = reported_owner
+            && !reported_owner.eq_ignore_ascii_case(&owner.login)
+        {
+            return Err(format!(
+                "billing usage summary owner mismatch: returned {reported_owner:?}, requested {:?}",
+                owner.login
+            ));
+        }
+
+        Ok(self
+            .usage_items
+            .into_iter()
+            .map(AccountUsageItem::from)
+            .collect())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubBillingTimePeriod {
+    year: i32,
+    month: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubBillingUsageItem {
+    product: String,
+    sku: String,
+    unit_type: String,
+    price_per_unit: Option<f64>,
+    gross_quantity: f64,
+    gross_amount: Option<f64>,
+    discount_quantity: f64,
+    discount_amount: Option<f64>,
+    net_quantity: f64,
+    net_amount: Option<f64>,
+}
+
+impl From<GithubBillingUsageItem> for AccountUsageItem {
+    fn from(value: GithubBillingUsageItem) -> Self {
+        Self {
+            product: value.product,
+            sku: value.sku,
+            unit_type: value.unit_type,
+            price_per_unit: value.price_per_unit,
+            gross_quantity: value.gross_quantity,
+            gross_amount: value.gross_amount,
+            discount_quantity: value.discount_quantity,
+            discount_amount: value.discount_amount,
+            net_quantity: value.net_quantity,
+            net_amount: value.net_amount,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -865,6 +1073,34 @@ mod tests {
                 stream.write_all(response.as_bytes()).unwrap();
                 stream.flush().unwrap();
             }
+        });
+        (format!("http://{address}"), receiver, handle)
+    }
+
+
+    fn spawn_http_response_fixture(
+        status_line: &str,
+        body: String,
+    ) -> (String, mpsc::Receiver<String>, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let status_line = status_line.to_owned();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            sender
+                .send(request.lines().next().unwrap_or_default().to_owned())
+                .unwrap();
+            let response = format!(
+                "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
         });
         (format!("http://{address}"), receiver, handle)
     }
@@ -1103,6 +1339,102 @@ mod tests {
                 "DELETE /repos/example-user/project-alpha/actions/runs/7001 HTTP/1.1",
             ]
         );
+    }
+
+
+    #[tokio::test]
+    async fn reads_personal_billing_usage_summary_without_collapsing_skus() {
+        let body = r#"{"timePeriod":{"year":2026,"month":9},"user":"example-user","usageItems":[{"product":"Actions","sku":"actions_linux","unitType":"minutes","pricePerUnit":0.006,"grossQuantity":120,"grossAmount":0.72,"discountQuantity":120,"discountAmount":0.72,"netQuantity":0,"netAmount":0},{"product":"Actions","sku":"actions_storage","unitType":"gb_hours","pricePerUnit":0.000008,"grossQuantity":25,"grossAmount":0.0002,"discountQuantity":25,"discountAmount":0.0002,"netQuantity":0,"netAmount":0}]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![body]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let owner = BillingOwner {
+            provider: "github".to_owned(),
+            kind: BillingOwnerKind::User,
+            login: "example-user".to_owned(),
+        };
+        let period = BillingPeriod::monthly(2026, 9).unwrap();
+
+        let observation = AccountUsageProvider::billing_usage_summary(&client, &owner, period).await;
+        server.join().unwrap();
+
+        assert!(observation.is_available());
+        assert_eq!(observation.owner, owner);
+        assert_eq!(observation.period, period);
+        assert_eq!(observation.items.len(), 2);
+        assert_eq!(observation.items[0].sku, "actions_linux");
+        assert_eq!(observation.items[0].unit_type, "minutes");
+        assert_eq!(observation.items[1].sku, "actions_storage");
+        assert_eq!(observation.items[1].unit_type, "gb_hours");
+        assert!(observation.source.public_preview);
+
+        assert_eq!(
+            requests.try_iter().collect::<Vec<_>>(),
+            vec!["GET /users/example-user/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_organization_billing_usage_from_organization_endpoint() {
+        let body = r#"{"timePeriod":{"year":2026,"month":9},"organization":"example-org","usageItems":[]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![body]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let owner = BillingOwner {
+            provider: "github".to_owned(),
+            kind: BillingOwnerKind::Organization,
+            login: "example-org".to_owned(),
+        };
+
+        let observation = AccountUsageProvider::billing_usage_summary(
+            &client,
+            &owner,
+            BillingPeriod::monthly(2026, 9).unwrap(),
+        )
+        .await;
+        server.join().unwrap();
+
+        assert!(observation.is_available());
+        assert!(observation.items.is_empty());
+        assert_eq!(
+            requests.try_iter().collect::<Vec<_>>(),
+            vec!["GET /organizations/example-org/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn forbidden_billing_usage_is_unknown_not_zero() {
+        let body = r#"{"message":"Resource not accessible by integration"}"#.to_owned();
+        let (base_url, requests, server) =
+            spawn_http_response_fixture("403 Forbidden", body);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let owner = BillingOwner {
+            provider: "github".to_owned(),
+            kind: BillingOwnerKind::User,
+            login: "example-user".to_owned(),
+        };
+
+        let observation = AccountUsageProvider::billing_usage_summary(
+            &client,
+            &owner,
+            BillingPeriod::monthly(2026, 9).unwrap(),
+        )
+        .await;
+        server.join().unwrap();
+
+        assert!(observation.items.is_empty());
+        assert!(matches!(
+            observation.availability,
+            gh_housekeeper_core::AccountUsageAvailability::Unknown {
+                reason: AccountUsageUnknownReason::PermissionDenied,
+                ..
+            }
+        ));
+        assert_eq!(requests.try_iter().count(), 1);
     }
 
     #[test]
