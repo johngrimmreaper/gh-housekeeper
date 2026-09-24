@@ -140,10 +140,11 @@ impl GithubClient {
     }
 
     fn reserve_mutation_delay(&self, method: &Method) -> Duration {
-        if !matches!(
-            *method,
-            Method::POST | Method::PATCH | Method::PUT | Method::DELETE
-        ) {
+        if method != Method::POST
+            && method != Method::PATCH
+            && method != Method::PUT
+            && method != Method::DELETE
+        {
             return Duration::ZERO;
         }
 
