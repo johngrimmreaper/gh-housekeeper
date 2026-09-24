@@ -669,7 +669,7 @@ impl RunPurgeExecutionService {
 
         let started_at = Utc::now();
         let mut items = Vec::with_capacity(plan.targets().len());
-        let mut rate_limit_halt_reason = None;
+        let mut rate_limit_halt_reason: Option<String> = None;
         for target in plan.targets() {
             if let Some(reason) = &rate_limit_halt_reason {
                 items.push(blocked_execution_item(
