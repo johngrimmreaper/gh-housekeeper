@@ -49,7 +49,7 @@ The GitHub token wrapper deliberately redacts `Debug` output.
 
 Artifact archives are not downloaded for normal inventory, storage aggregation, policy classification, or deletion eligibility. GitHub metadata already exposes artifact ID, name, size, timestamps, expiration state, repository association, and workflow-run references.
 
-Actions-cache inventory is also metadata-only and currently read-only. It records cache ID, repository, key, version, Git ref, creation time, last-accessed time, and size. `classify caches` may evaluate that stable snapshot through the shared resource-aware policy engine and report potential recovery, but it creates no cleanup plan and has no mutation capability. The current CLI has no cache DELETE path, and cache inventory/classification state cannot authorize deletion.
+Actions-cache inventory records cache ID, repository, key, version, Git ref, creation time, last-accessed time, and size. `classify caches` remains read-only policy evaluation. Destructive cache cleanup uses a separate immutable cache-purge plan containing exact numeric cache IDs; inventory/classification output alone never authorizes deletion. The cache mutation capability is intentionally narrow: it may call only the provider's exact Actions-cache delete endpoint for the planned repository/cache ID. Release assets, canonical tarballs, packages, workflow artifacts, and other GitHub resources are outside this capability.
 
 ## Rate limits and retries
 
@@ -138,3 +138,24 @@ Workflow-run purge intent and execution records live under the separate versione
 A destructive recommendation without a structured explanation is not sufficient. Policy output must identify the decision, reason code(s), applicable rule identifier(s), and human-readable explanation.
 
 Conflicts that cannot safely be resolved become `ManualReview` rather than an implicit deletion.
+
+## Actions-cache purge safety
+
+Actions-cache purge has separate plan, revalidation, execution, and audit types. It does not reinterpret cache keys, refs, release assets, package assets, or artifact names as destructive identity.
+
+Bulk selection is never implicit. Callers must provide exact `--cache-id` values or explicitly request `--all-caches`, and destructive scope must be explicit through `--repo`, `--owner`, or `--all-repositories`. Optional key/ref/age/unused filters may narrow `--all-caches`, but the resulting immutable plan contains exact numeric cache IDs.
+
+The provider mutation endpoint is fixed to:
+
+```text
+DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}
+```
+
+No cache-purge code path calls GitHub Releases endpoints. Release assets such as canonical source tarballs therefore cannot be selected or deleted by cache purge.
+
+Before consent, every planned cache is exact-looked-up and compared with its immutable snapshot. Changed caches make the plan unsafe. After authorization, a durable intent is persisted before the first mutation. Execution repeats exact lookup just-in-time, deletes only the unchanged numeric cache ID, then exact-lookups the cache again and accepts success only when it is absent.
+
+Interactive confirmation is bound to the reviewed blast radius using a phrase such as `purge 9 caches from 5 repositories`. Cache purge uses the same conservative two-second mutation pacing and 250-request API headroom guard as workflow-run purge. DELETE requests are single-attempt and are never blindly retried.
+
+Cache purge intent and final records live separately under `cache-purge-audit/v1`. A pending intent means authorization was durably recorded but no linked final execution record exists; remote state must be inspected before retrying.
+
