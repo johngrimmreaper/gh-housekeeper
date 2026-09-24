@@ -13,8 +13,9 @@ use gh_housekeeper_core::{
     RunProtection, RunProtectionKey, RunPurgeExecutionService, RunPurgeExecutionState,
     RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService, RunPurgeSelection,
     RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel,
-    WorkflowRun, WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider,
-    aggregate_caches, format_bytes, matches_glob, monitoring_scheduler_cancellation,
+    UsageAllowanceProvenance, UsageQuotaEvaluation, UsageQuotaLevel, UsageQuotaStatus, WorkflowRun,
+    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
+    evaluate_usage_quota, format_bytes, matches_glob, monitoring_scheduler_cancellation,
     parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
@@ -33,6 +34,7 @@ use std::{
     io::{self, IsTerminal, Write},
     path::PathBuf,
     sync::Arc,
+    time::Duration,
 };
 
 #[derive(Parser)]
@@ -1397,6 +1399,50 @@ async fn run_monitor_account_once(
 
     let paths = StatePaths::discover()
         .context("failed to determine local gh-housekeeper state directory")?;
+    let loaded = ConfigStore::from_paths(&paths)
+        .load()
+        .context("failed to load account usage configuration")?;
+    let configured_thresholds = loaded
+        .config
+        .account_usage
+        .thresholds()
+        .context("invalid account usage thresholds")?;
+    let domain_allowances = loaded
+        .config
+        .account_usage
+        .domain_allowances()
+        .context("invalid configured account usage allowance")?;
+    let matching_allowances = domain_allowances
+        .into_iter()
+        .filter(|(configured_owner, _)| same_billing_owner(configured_owner, &owner))
+        .collect::<Vec<_>>();
+
+    let quota_evaluations = if let Some(thresholds) = configured_thresholds {
+        let max_age = Duration::from_secs(
+            loaded
+                .config
+                .account_usage
+                .max_age_minutes
+                .saturating_mul(60),
+        );
+        let evaluated_at = Utc::now();
+        matching_allowances
+            .iter()
+            .map(|(_, allowance)| {
+                evaluate_usage_quota(
+                    &observation,
+                    Some(allowance),
+                    thresholds,
+                    evaluated_at,
+                    max_age,
+                )
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to evaluate configured account usage allowance")?
+    } else {
+        Vec::new()
+    };
+
     let store = AccountUsageHistoryStore::from_paths(&paths);
     let sample_path = store
         .append(&observation)
@@ -1409,13 +1455,25 @@ async fn run_monitor_account_once(
                 serde_json::to_string_pretty(&json!({
                     "state_directory": paths.state_dir,
                     "account_usage_directory": store.directory(),
+                    "config_path": loaded.path,
+                    "config_persisted": loaded.persisted,
                     "sample_path": sample_path,
                     "observation": observation,
+                    "quota_evaluations": quota_evaluations,
+                    "quota_delivery_receipts_written": false,
                 }))?
             );
         }
         OutputFormat::Table => {
             print_account_usage_observation_table(&observation);
+            print_account_usage_quota_evaluations(
+                &owner,
+                &matching_allowances,
+                configured_thresholds.is_some(),
+                &quota_evaluations,
+                &loaded.path,
+                loaded.persisted,
+            );
             println!("Sample:               {}", sample_path.display());
         }
     }
@@ -1560,9 +1618,6 @@ fn print_account_usage_observation_table(
                     item.net_quantity
                 );
             }
-            println!();
-            println!("Allowance:             unavailable (not inferred)");
-            println!("Remaining balance:     unavailable");
         }
         AccountUsageAvailability::Unsupported { reason } => {
             println!("Reason:                {reason}");
@@ -1571,6 +1626,125 @@ fn print_account_usage_observation_table(
             println!("Reason:                {reason:?}");
             println!("Detail:                {message}");
         }
+    }
+}
+
+
+fn same_billing_owner(left: &BillingOwner, right: &BillingOwner) -> bool {
+    left.kind == right.kind
+        && left.provider.eq_ignore_ascii_case(&right.provider)
+        && left.login.eq_ignore_ascii_case(&right.login)
+}
+
+fn print_account_usage_quota_evaluations(
+    owner: &BillingOwner,
+    matching_allowances: &[(BillingOwner, gh_housekeeper_core::UsageAllowance)],
+    thresholds_configured: bool,
+    evaluations: &[UsageQuotaEvaluation],
+    config_path: &std::path::Path,
+    config_persisted: bool,
+) {
+    println!();
+    println!(
+        "Allowance config:      {}{}",
+        config_path.display(),
+        if config_persisted {
+            ""
+        } else {
+            " (built-in defaults; not persisted)"
+        }
+    );
+
+    if matching_allowances.is_empty() {
+        println!(
+            "Quota evaluation:      unconfigured for {}:{}",
+            billing_owner_kind_label(owner.kind),
+            owner.login
+        );
+        println!("Remaining balance:     unavailable");
+        return;
+    }
+
+    if !thresholds_configured {
+        println!(
+            "Quota evaluation:      {} matching allowance(s), thresholds unconfigured",
+            matching_allowances.len()
+        );
+        println!("Remaining balance:     unavailable");
+        return;
+    }
+
+    println!(
+        "{:<28} {:<10} {:>11} {:>11} {:>9} {:>11} {:<9} {:<16}",
+        "RESOURCE", "STATE", "USED", "ALLOWANCE", "PERCENT", "REMAINING", "BASIS", "PROVENANCE"
+    );
+    for evaluation in evaluations {
+        let resource_id = evaluation.resource_id.as_deref().unwrap_or("<unconfigured>");
+        match &evaluation.status {
+            UsageQuotaStatus::Unconfigured => {
+                println!(
+                    "{:<28} {:<10} {:>11} {:>11} {:>9} {:>11} {:<9} {:<16}",
+                    resource_id,
+                    "unconfigured",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-"
+                );
+            }
+            UsageQuotaStatus::Unknown { reason, .. } => {
+                println!(
+                    "{:<28} {:<10} {:>11} {:>11} {:>9} {:>11} {:<9} {:<16}",
+                    resource_id,
+                    format!("unknown:{reason:?}"),
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-"
+                );
+            }
+            UsageQuotaStatus::Known {
+                level,
+                usage_quantity,
+                allowance_quantity,
+                percent_used,
+                remaining_quantity,
+                quantity_basis,
+                provenance,
+            } => {
+                println!(
+                    "{:<28} {:<10} {:>11.4} {:>11.4} {:>8.2}% {:>11.4} {:<9} {:<16}",
+                    resource_id,
+                    usage_quota_level_label(*level),
+                    usage_quantity,
+                    allowance_quantity,
+                    percent_used,
+                    remaining_quantity,
+                    format!("{quantity_basis:?}").to_ascii_lowercase(),
+                    allowance_provenance_label(provenance)
+                );
+            }
+        }
+    }
+    println!("Notification delivery: none (explicit CLI query)");
+}
+
+fn usage_quota_level_label(level: UsageQuotaLevel) -> &'static str {
+    match level {
+        UsageQuotaLevel::Healthy => "healthy",
+        UsageQuotaLevel::Warning => "warning",
+        UsageQuotaLevel::Critical => "critical",
+    }
+}
+
+fn allowance_provenance_label(provenance: &UsageAllowanceProvenance) -> &'static str {
+    match provenance {
+        UsageAllowanceProvenance::ProviderReported { .. } => "provider_reported",
+        UsageAllowanceProvenance::UserConfigured { .. } => "user_configured",
     }
 }
 
@@ -4860,6 +5034,29 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+
+    #[test]
+    fn billing_owner_matching_is_case_insensitive_but_kind_sensitive() {
+        let user = BillingOwner {
+            provider: "github".to_owned(),
+            kind: BillingOwnerKind::User,
+            login: "Example-User".to_owned(),
+        };
+        let same = BillingOwner {
+            provider: "GITHUB".to_owned(),
+            kind: BillingOwnerKind::User,
+            login: "example-user".to_owned(),
+        };
+        let organization = BillingOwner {
+            provider: "github".to_owned(),
+            kind: BillingOwnerKind::Organization,
+            login: "example-user".to_owned(),
+        };
+
+        assert!(same_billing_owner(&user, &same));
+        assert!(!same_billing_owner(&user, &organization));
     }
 
     #[test]
