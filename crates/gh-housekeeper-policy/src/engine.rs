@@ -28,6 +28,7 @@ pub enum ReasonCode {
     DefaultUnusedRetentionExpired,
     RuleUnusedRetentionActive,
     RuleUnusedRetentionExpired,
+    RunNotCompleted,
 }
 
 impl ReasonCode {
@@ -44,6 +45,7 @@ impl ReasonCode {
             Self::DefaultUnusedRetentionExpired => "default_unused_retention_expired",
             Self::RuleUnusedRetentionActive => "rule_unused_retention_active",
             Self::RuleUnusedRetentionExpired => "rule_unused_retention_expired",
+            Self::RunNotCompleted => "run_not_completed",
         }
     }
 }
