@@ -247,6 +247,7 @@ See:
 - `docs/ARCHITECTURE.md`
 - `docs/POLICY.md`
 - `docs/SAFETY.md`
+- `docs/DAEMON.md`
 
 ## Development validation
 
