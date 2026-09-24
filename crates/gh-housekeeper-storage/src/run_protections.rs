@@ -27,6 +27,11 @@ struct ProtectionFile {
     protections: Vec<RunProtection>,
 }
 
+#[derive(Deserialize)]
+struct ProtectionHeader {
+    schema_version: u32,
+}
+
 #[derive(Clone, Debug)]
 pub struct RunProtectionStore {
     directory: PathBuf,
@@ -125,13 +130,15 @@ impl RunProtectionStore {
     fn read_unlocked(&self) -> Result<ProtectionIndex, RunProtectionStoreError> {
         let bytes =
             fs::read(self.path()).map_err(|error| self.io("read protection file", error))?;
-        let file: ProtectionFile = serde_json::from_slice(&bytes)
+        let header: ProtectionHeader = serde_json::from_slice(&bytes)
             .map_err(|error| RunProtectionStoreError::Corrupt(error.to_string()))?;
-        if file.schema_version != RUN_PROTECTIONS_SCHEMA_VERSION {
+        if header.schema_version != RUN_PROTECTIONS_SCHEMA_VERSION {
             return Err(RunProtectionStoreError::UnsupportedVersion(
-                file.schema_version,
+                header.schema_version,
             ));
         }
+        let file: ProtectionFile = serde_json::from_slice(&bytes)
+            .map_err(|error| RunProtectionStoreError::Corrupt(error.to_string()))?;
         ProtectionIndex::new(file.protections).map_err(RunProtectionStoreError::Invalid)
     }
 
@@ -424,7 +431,7 @@ mod tests {
         let reopened = RunProtectionStore {
             directory: store.directory.clone(),
         };
-        assert_eq!(reopened.load_strict().unwrap().entries(), &[entry.clone()]);
+        assert_eq!(reopened.load_strict().unwrap().entries(), std::slice::from_ref(&entry));
         assert!(store.unprotect(&entry.key).await.unwrap());
         assert!(!store.unprotect(&entry.key).await.unwrap());
         assert!(store.load_strict().unwrap().entries().is_empty());
@@ -458,6 +465,30 @@ mod tests {
         let _ = fs::remove_dir_all(store.directory.parent().unwrap());
     }
 
+    #[tokio::test]
+    async fn concurrent_protections_for_distinct_runs_preserve_both_entries() {
+        let store = test_store();
+        store.initialize_empty().unwrap();
+        let first = protection();
+        let mut second = first.clone();
+        second.key.run_id = 8;
+        let writes = [first.clone(), second.clone()].map(|entry| {
+            let store = store.clone();
+            tokio::spawn(async move {
+                let lease = store.acquire_target(&entry.key).await.unwrap();
+                lease.protect_verified(entry).unwrap()
+            })
+        });
+        for write in writes {
+            assert_eq!(write.await.unwrap(), ProtectOutcome::Inserted);
+        }
+        let entries = store.load_strict().unwrap();
+        assert_eq!(entries.entries().len(), 2);
+        assert!(entries.entries().contains(&first));
+        assert!(entries.entries().contains(&second));
+        let _ = fs::remove_dir_all(store.directory.parent().unwrap());
+    }
+
     #[test]
     fn corrupt_or_duplicate_state_is_never_an_empty_store() {
         let store = test_store();
@@ -466,6 +497,11 @@ mod tests {
         assert!(matches!(
             store.load_strict(),
             Err(RunProtectionStoreError::Corrupt(_))
+        ));
+        fs::write(store.path(), br#"{"schema_version":2,"future_field":true}"#).unwrap();
+        assert!(matches!(
+            store.load_strict(),
+            Err(RunProtectionStoreError::UnsupportedVersion(2))
         ));
         let entry = protection();
         fs::write(
