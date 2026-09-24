@@ -3,6 +3,7 @@ mod cleanup;
 mod execution;
 mod monitoring;
 mod revalidation;
+mod run;
 
 pub use cache::{
     ActionsCache, CacheAggregationKey, CacheInventoryService, CacheInventorySnapshot,
@@ -29,6 +30,9 @@ pub use monitoring::{
 pub use revalidation::{
     ArtifactField, RevalidationError, RevalidationItem, RevalidationReport, RevalidationService,
     RevalidationState,
+};
+pub use run::{
+    WorkflowRun, WorkflowRunInventoryService, WorkflowRunInventorySnapshot, WorkflowRunProvider,
 };
 
 use async_trait::async_trait;
