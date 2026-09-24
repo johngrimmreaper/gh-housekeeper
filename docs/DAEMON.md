@@ -195,7 +195,7 @@ The read-only account-usage foundation now exists below the daemon layer:
 - `AccountUsageHistoryStore` persists these observations under `account-usage/v1/`, independently of `monitoring/v1/`;
 - fixture tests cover personal and organization endpoint selection, distinct units/SKUs, permission denial, period/account separation, persistence, corrupt records, and credential-field absence.
 
-This checkpoint is **not** daemon delivery yet. There is no account-usage CLI surface, allowance percentage calculation, threshold evaluator, deduplication state, polling loop, desktop notification, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
+This checkpoint is **not** daemon delivery yet. Explicit `monitor account once` and `monitor account history` CLI surfaces now exercise the shared provider/store without starting background work. There is still no allowance percentage calculation, threshold evaluator, deduplication state, polling loop, desktop notification, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
 
 ## Daemon status model
 

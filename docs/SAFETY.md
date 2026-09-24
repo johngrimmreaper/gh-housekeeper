@@ -185,3 +185,5 @@ Usage values retain product, SKU, and unit boundaries. Different runner SKUs and
 The account-usage history is stored separately under `account-usage/v1/`; existing `monitoring/v1/` remains compatible. Persisted observations contain source/period/owner metadata but no tokens or Authorization headers. History is evidence for display and transition analysis only, never remote authority.
 
 No included allowance is assumed from the authenticated account or a repository plan. Percentage-used, remaining-balance, warning, or critical calculations must stay unavailable until an allowance has explicit trustworthy provenance. Quota pressure must never create `ExecutionAuthorization`, select deletion targets, bypass local protections, or invoke any existing DELETE executor.
+
+`monitor account once` is an explicit one-shot GET + local persistence operation. `monitor account history` is local-only: its dispatch path does not construct a GitHub provider, discover a token, or contact the network. Neither command daemonizes itself or emits unsolicited notifications.

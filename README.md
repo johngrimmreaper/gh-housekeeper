@@ -310,4 +310,30 @@ The core models a billing owner (user or organization), monthly billing period, 
 
 Account-usage samples are persisted separately under `account-usage/v1/`; existing `monitoring/v1/` artifact history remains unchanged and readable. The account-usage history is observational only and stores no token or Authorization value.
 
-This foundation does **not** yet expose a CLI command, calculate remaining included allowance, infer a GitHub plan, combine different runner SKUs, evaluate percentage thresholds, deduplicate quota notifications, or run a daemon. Remaining allowance will only be calculated after an allowance comes from a supported authoritative source or an explicitly labeled user configuration.
+The CLI now exposes explicit read-only account usage operations:
+
+```text
+# Query and persist one personal-account billing month.
+gh-housekeeper monitor account once \
+  --billing-owner example-user \
+  --year 2026 \
+  --month 9
+
+# Query an organization billing owner.
+gh-housekeeper monitor account once \
+  --billing-owner example-org \
+  --billing-owner-kind organization \
+  --year 2026 \
+  --month 9 \
+  --format json
+
+# Read only the matching local owner/month series; this does not contact GitHub.
+gh-housekeeper monitor account history \
+  --billing-owner example-user \
+  --year 2026 \
+  --month 9
+```
+
+Billing owner and period are explicit and independent of repository scan scope. `account history` does not discover credentials or construct a GitHub provider. `account once` persists the observation even when GitHub reports an unavailable/unknown state.
+
+This foundation still does **not** calculate remaining included allowance, infer a GitHub plan, combine different runner SKUs, evaluate percentage thresholds, deduplicate quota notifications, or run a daemon. Remaining allowance will only be calculated after an allowance comes from a supported authoritative source or an explicitly labeled user configuration.
