@@ -69,6 +69,8 @@ Thirty days is a gh-housekeeper product default, not a GitHub rule.
 
 For artifacts and workflow runs, `keep_days` is elapsed wall-clock retention in 24-hour days. Therefore `keep_days = 2` means 48 hours, **not two business days**.
 
+For workflow runs, choose `keep_business_days` instead when weekdays should count. The two fields cannot appear together in `[defaults.runs]` or in the same rule. A matching rule that declares either field replaces the default retention mode entirely; more specific matching retention rules win. Equally specific rules requesting different modes or values yield `ManualReview`. Rules containing only `keep_latest` or `protect` leave the default retention unchanged.
+
 Cache `keep_days` measures age from creation. Optional `keep_unused_days` measures time since `last_accessed_at`.
 
 Adding resource-specific defaults does not change the semantic fingerprint of an otherwise unchanged legacy artifact policy while the new defaults remain at their built-in values. Resource-specific defaults and rules contribute to the fingerprint when actually configured.
@@ -159,6 +161,8 @@ Artifact/cache `keep_latest` retains the newest resources in the set matched by 
 
 Workflow-run `keep_latest` has an additional safety grouping: it is evaluated independently for each **repository + workflow ID + branch** family among completed matching runs. Thus an owner-wide `keep_latest = 2` rule keeps two latest completed runs for each matching workflow/branch family in each repository, rather than two runs across the entire owner.
 
+Set `keep_latest_by = "workflow"` on a workflow-run rule to group by **repository + workflow ID**, across matching branches. `workflow_branch` is the default and may be set explicitly. A branch selector still limits which runs match before grouping. Ties are broken by creation time, update time, run number, attempt, then exact run ID (newer/higher first). `keep_latest_by` requires `keep_latest`; these fields are workflow-run-only. Neither grouping mode replaces exact local run protection.
+
 ## Read-only classification CLI
 
 Cache classification:
@@ -247,14 +251,19 @@ There is no second policy-specific delete implementation.
 
 ## Business-day retention
 
-Business-day retention is intentionally **not** represented by `keep_days`.
+```toml
+[defaults.runs]
+keep_business_days = 2
 
-A future `keep_business_days` feature should define, before implementation:
+[[rules]]
+id = "short-lived-ci"
+resource = "workflow_run"
+workflow = "CI"
+keep_business_days = 2
+keep_latest = 3
+keep_latest_by = "workflow"
+```
 
-- which timezone determines day boundaries;
-- which weekdays count as working days;
-- whether configurable holidays are skipped;
-- behavior around DST changes;
-- whether the retention deadline is based on run creation or completion time.
+Business days are Monday through Friday in UTC; there is no holiday calendar. The UTC creation **date** is excluded, even if the run was created on a weekend. Count the next N weekdays and expire at the **same UTC time of day** on the Nth weekday (inclusive). A run created Friday at 16:30 UTC with `keep_business_days = 2` remains active throughout Monday and expires Tuesday at 16:30 UTC. A Saturday or Sunday creation starts counting on Monday. `0` expires immediately at creation. UTC has no daylight-saving transition. Retention uses run creation, not completion; non-completed runs remain protected regardless of age. If the deadline cannot be represented, it never expires. GitHub's own run retention may independently remove a run sooner.
 
-This is required for semantics such as “a Friday run must still be available on Monday.” Until that feature exists, use `keep_days` only when elapsed 24-hour retention is acceptable, or combine elapsed retention with `keep_latest` for additional safety.
+The existing `keep_days` semantics and fingerprints remain unchanged. Explicit `workflow_branch` grouping has the same fingerprint as an omitted grouping setting; new business-day values and `workflow` grouping change the fingerprint. Existing versioned purge plans and audits remain readable; a plan already created under an older policy retains its exact target snapshots and existing revalidation/apply safeguards.
