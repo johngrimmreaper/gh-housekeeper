@@ -2162,6 +2162,399 @@ async fn run_purge_plan_runs(
     Ok(())
 }
 
+async fn run_purge_plan_caches(
+    provider: Arc<dyn CachePurgeProvider>,
+    command: PurgeCachesPlanCommand,
+) -> Result<()> {
+    if command.cache_ids.is_empty() == !command.all_caches {
+        anyhow::bail!(
+            "choose exactly one cache purge selection mode: repeat --cache-id ID, or pass --all-caches"
+        );
+    }
+
+    let scan_options = if command.all_repositories {
+        let account = provider
+            .account()
+            .await
+            .context("failed to resolve authenticated account for --all-repositories")?;
+        ScanOptions {
+            scope: ScanScope::Owner(account.login),
+            exclude_repositories: command.scope.exclude_repositories.clone(),
+            concurrency: command.scope.concurrency.clamp(1, 16),
+        }
+    } else {
+        if command.scope.repo.is_none() && command.scope.owner.is_none() {
+            anyhow::bail!(
+                "cache purge requires an explicit scope: pass --repo OWNER/REPO, --owner OWNER, or --all-repositories"
+            );
+        }
+        command.scope.scan_options()
+    };
+
+    let older_than = command
+        .older_than
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --older-than duration")?;
+    let unused_for = command
+        .unused_for
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --unused-for duration")?;
+    if let Some(pattern) = command.key.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid cache key glob: {pattern}"))?;
+    }
+    if let Some(pattern) = command.reference.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid cache ref glob: {pattern}"))?;
+    }
+
+    let snapshot = CacheInventoryService::new(provider.clone())
+        .scan(scan_options)
+        .await?;
+    if !snapshot.issues.is_empty() {
+        print_scan_issues(&snapshot.issues);
+        anyhow::bail!("refusing to plan cache purge from an incomplete inventory snapshot");
+    }
+
+    let now = Utc::now();
+    let (selected, selection) = if command.all_caches {
+        let selected = snapshot
+            .caches
+            .iter()
+            .filter(|cache| {
+                older_than
+                    .map(|duration| cache.older_than(now, duration))
+                    .unwrap_or(true)
+            })
+            .filter(|cache| {
+                unused_for
+                    .map(|duration| cache.unused_for(now, duration))
+                    .unwrap_or(true)
+            })
+            .filter(|cache| {
+                command
+                    .key
+                    .as_deref()
+                    .map(|pattern| matches_glob(pattern, &cache.key).unwrap_or(false))
+                    .unwrap_or(true)
+            })
+            .filter(|cache| {
+                command
+                    .reference
+                    .as_deref()
+                    .map(|pattern| matches_glob(pattern, &cache.git_ref).unwrap_or(false))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        (selected, CachePurgeSelection::all())
+    } else {
+        let mut requested = command.cache_ids.clone();
+        requested.sort_unstable();
+        requested.dedup();
+
+        let mut selected = Vec::with_capacity(requested.len());
+        let mut missing = Vec::new();
+        for cache_id in &requested {
+            let matches = snapshot
+                .caches
+                .iter()
+                .filter(|cache| cache.id == *cache_id)
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [cache] => selected.push((*cache).clone()),
+                [] => missing.push(*cache_id),
+                _ => anyhow::bail!(
+                    "cache ID {cache_id} is ambiguous across the selected scope; use --repo OWNER/REPO"
+                ),
+            }
+        }
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "cache ID(s) not present in the complete selected scope: {:?}",
+                missing
+            );
+        }
+        (selected, CachePurgeSelection::explicit(requested))
+    };
+
+    let plan = CachePurgePlanningService::new(provider)
+        .build(&snapshot, selected, selection)
+        .await
+        .context("failed to build immutable cache purge plan")?;
+    write_cache_purge_plan_atomic_new(&command.output, &plan)
+        .with_context(|| format!("failed to persist cache purge plan {}", command.output.display()))?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
+        OutputFormat::Table => {
+            println!("Cache purge plan:     {}", command.output.display());
+            println!("Plan schema:          {}", plan.schema_version);
+            println!("Caches:               {}", plan.summary().cache_count());
+            println!(
+                "Repositories:         {}",
+                cache_purge_repository_count(&plan)
+            );
+            println!(
+                "Cache storage:        {}",
+                format_bytes(plan.summary().cache_bytes())
+            );
+            println!();
+            println!(
+                "{:<12} {:<40} {:<42} {:>14} REF",
+                "CACHE ID", "REPOSITORY", "KEY", "SIZE"
+            );
+            for cache in plan.targets() {
+                println!(
+                    "{:<12} {:<40} {:<42} {:>14} {}",
+                    cache.id,
+                    cache.repository.full_name,
+                    cache.key,
+                    format_bytes(cache.size_in_bytes),
+                    cache.git_ref
+                );
+            }
+            println!();
+            println!(
+                "Scope invariant: this plan contains GitHub Actions caches only; Release assets are not represented and cannot be deleted by this path."
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PurgePlanKind {
+    Runs,
+    Caches,
+}
+
+fn purge_plan_kind(path: &std::path::Path) -> Result<PurgePlanKind> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read purge plan {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&input)
+        .with_context(|| format!("invalid purge plan JSON {}", path.display()))?;
+    if value
+        .get("resource")
+        .and_then(|resource| resource.as_str())
+        == Some("actions_cache")
+    {
+        Ok(PurgePlanKind::Caches)
+    } else {
+        Ok(PurgePlanKind::Runs)
+    }
+}
+
+async fn run_purge_revalidate_any(
+    provider: Arc<GithubClient>,
+    command: PurgeRevalidateCommand,
+) -> Result<()> {
+    match purge_plan_kind(&command.plan)? {
+        PurgePlanKind::Runs => run_purge_revalidate_runs(provider, command).await,
+        PurgePlanKind::Caches => run_purge_revalidate_caches(provider, command).await,
+    }
+}
+
+async fn run_purge_apply_any(
+    provider: Arc<GithubClient>,
+    command: PurgeApplyCommand,
+) -> Result<()> {
+    match purge_plan_kind(&command.plan)? {
+        PurgePlanKind::Runs => run_purge_apply_runs(provider, command).await,
+        PurgePlanKind::Caches => run_purge_apply_caches(provider, command).await,
+    }
+}
+
+async fn run_purge_revalidate_caches(
+    provider: Arc<dyn CachePurgeProvider>,
+    command: PurgeRevalidateCommand,
+) -> Result<()> {
+    let plan = read_cache_purge_plan(&command.plan)?;
+    let report = CachePurgeRevalidationService::new(provider)
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate cache purge plan")?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+        OutputFormat::Table => {
+            println!("Plan:                 {}", command.plan.display());
+            println!("Targets checked:      {}", report.items.len());
+            println!(
+                "Safe to apply:        {}",
+                if report.is_safe_to_apply() { "yes" } else { "no" }
+            );
+            if !report.items.is_empty() {
+                println!();
+                println!("{:<12} {:<40} {:<22} DETAILS", "CACHE ID", "REPOSITORY", "STATE");
+                for item in &report.items {
+                    println!(
+                        "{:<12} {:<40} {:<22}",
+                        item.cache_id,
+                        item.repository,
+                        format!("{:?}", item.state).to_lowercase()
+                    );
+                    if let Some(error) = &item.error {
+                        println!("  -> {error}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_purge_apply_caches(
+    provider: Arc<dyn CachePurgeProvider>,
+    command: PurgeApplyCommand,
+) -> Result<()> {
+    let plan = read_cache_purge_plan(&command.plan)?;
+    let reviewed = CachePurgeRevalidationService::new(provider.clone())
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate cache purge plan")?;
+
+    if !reviewed.is_safe_to_apply() {
+        anyhow::bail!("cache purge plan is not safe to apply; no deletion was attempted");
+    }
+
+    if plan.targets().is_empty() {
+        println!("No cache targets; nothing to purge.");
+        return Ok(());
+    }
+
+    print_cache_purge_review(
+        &command.plan,
+        &plan,
+        &reviewed,
+        matches!(command.format, OutputFormat::Json),
+    );
+
+    let repository_count = cache_purge_repository_count(&plan);
+    let required_confirmation =
+        cache_purge_confirmation_phrase(plan.summary().cache_count(), repository_count);
+    let authorization = if command.yes {
+        ExecutionAuthorization::automation_yes()
+    } else {
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "refusing destructive cache purge without an interactive terminal; rerun interactively or pass --yes explicitly"
+            );
+        }
+        eprint!(
+            "Type '{}' to delete the reviewed GitHub Actions caches: ",
+            required_confirmation
+        );
+        io::stderr()
+            .flush()
+            .context("failed to flush cache purge confirmation prompt")?;
+        let mut response = String::new();
+        io::stdin()
+            .read_line(&mut response)
+            .context("failed to read cache purge confirmation")?;
+        if response.trim() != required_confirmation {
+            anyhow::bail!(
+                "cache purge confirmation did not match exact required phrase '{}'",
+                required_confirmation
+            );
+        }
+        ExecutionAuthorization::interactive_confirmation()
+    };
+
+    let paths = StatePaths::discover().context(
+        "refusing cache purge because the local audit state directory could not be determined; no deletion was attempted",
+    )?;
+    let audit_store = CachePurgeAuditStore::from_paths(&paths);
+    let audit_intent = audit_store
+        .append_intent(&plan, &reviewed, authorization.kind())
+        .context(
+            "refusing cache purge because the authorized pre-mutation audit intent could not be persisted; no deletion was attempted",
+        )?;
+
+    let execution = CachePurgeExecutionService::new(provider)
+        .execute(&plan, &reviewed, authorization)
+        .await
+        .with_context(|| {
+            format!(
+                "cache purge did not produce a complete execution report; authorized intent is preserved at {}. Inspect remote state before retrying",
+                audit_intent.path.display()
+            )
+        })?;
+    let audit_path = audit_store
+        .append_with_intent(&execution, &audit_intent.intent_id)
+        .with_context(|| {
+            format!(
+                "remote cache purge completed, but final audit persistence failed; authorized intent remains at {}",
+                audit_intent.path.display()
+            )
+        })?;
+
+    match command.format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "execution": execution,
+                "audit_intent": audit_intent.path,
+                "audit_record": audit_path
+            }))?
+        ),
+        OutputFormat::Table => {
+            let blocked = execution
+                .items
+                .iter()
+                .filter(|item| item.state == CachePurgeExecutionState::Blocked)
+                .count();
+            let changed = execution
+                .items
+                .iter()
+                .filter(|item| item.state == CachePurgeExecutionState::Changed)
+                .count();
+            let revalidation_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.state == CachePurgeExecutionState::RevalidationFailed)
+                .count();
+            let verification_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.state == CachePurgeExecutionState::VerificationFailed)
+                .count();
+            let delete_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.state == CachePurgeExecutionState::DeleteFailed)
+                .count();
+
+            println!();
+            println!("Cache purge complete");
+            println!("Caches reviewed:       {}", execution.cache_count());
+            println!("Caches deleted:        {}", execution.deleted_cache_count());
+            println!("Caches blocked:        {blocked}");
+            println!("Caches changed:        {changed}");
+            println!("Revalidation failed:   {revalidation_failed}");
+            println!("Verification failed:   {verification_failed}");
+            println!("Cache deletion failed: {delete_failed}");
+            println!(
+                "Cache bytes removed:   {}",
+                format_bytes(execution.reclaimed_bytes())
+            );
+            println!("Audit intent:          {}", audit_intent.path.display());
+            println!("Audit record:          {}", audit_path.display());
+            if !execution.is_complete_success() {
+                println!();
+                println!(
+                    "Cache purge completed with blocked or failed target(s); inspect the audit record before retrying."
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_purge_revalidate_runs(
     provider: Arc<dyn WorkflowRunProvider>,
     command: PurgeRevalidateCommand,
