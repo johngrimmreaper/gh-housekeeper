@@ -416,6 +416,8 @@ struct PurgePlanCommand {
 enum PurgePlanResource {
     /// Plan a thorough purge of completed workflow runs, including logs and artifacts.
     Runs(PurgeRunsPlanCommand),
+    /// Plan deletion of exact GitHub Actions caches. Release assets are never in scope.
+    Caches(PurgeCachesPlanCommand),
 }
 
 #[derive(Args)]
@@ -492,10 +494,78 @@ struct PurgeRunsPlanCommand {
 }
 
 #[derive(Args)]
+struct PurgeCachesPlanCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["repo", "owner"],
+        help = "Explicitly target all repositories owned by the authenticated account"
+    )]
+    all_repositories: bool,
+
+    #[arg(
+        long = "cache-id",
+        value_name = "ID",
+        conflicts_with = "all_caches",
+        help = "Exact Actions cache ID to purge; may be repeated"
+    )]
+    cache_ids: Vec<u64>,
+
+    #[arg(
+        long,
+        conflicts_with = "cache_ids",
+        help = "Explicitly select all Actions caches in scope, optionally narrowed by filters"
+    )]
+    all_caches: bool,
+
+    #[arg(long, requires = "all_caches", help = "For --all-caches, cache key glob")]
+    key: Option<String>,
+
+    #[arg(
+        long = "ref",
+        requires = "all_caches",
+        help = "For --all-caches, Git ref glob"
+    )]
+    reference: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_caches",
+        help = "For --all-caches, only caches created at least this long ago"
+    )]
+    older_than: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_caches",
+        help = "For --all-caches, only caches unused for at least this long"
+    )]
+    unused_for: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write the immutable cache purge-plan JSON to this new file"
+    )]
+    output: PathBuf,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum PurgeHistoryResource {
+    Runs,
+    Caches,
+}
+
+#[derive(Args)]
 struct PurgeRevalidateCommand {
     #[arg(
         value_name = "PLAN",
-        help = "Path to an immutable workflow-run purge-plan JSON file"
+        help = "Path to an immutable purge-plan JSON file"
     )]
     plan: PathBuf,
 
@@ -507,7 +577,7 @@ struct PurgeRevalidateCommand {
 struct PurgeApplyCommand {
     #[arg(
         value_name = "PLAN",
-        help = "Path to an immutable workflow-run purge-plan JSON file"
+        help = "Path to an immutable purge-plan JSON file"
     )]
     plan: PathBuf,
 
@@ -523,6 +593,9 @@ struct PurgeApplyCommand {
 
 #[derive(Args)]
 struct PurgeHistoryCommand {
+    #[arg(long, value_enum, default_value_t = PurgeHistoryResource::Runs)]
+    resource: PurgeHistoryResource,
+
     #[arg(
         long = "repo",
         value_name = "OWNER/REPO",
