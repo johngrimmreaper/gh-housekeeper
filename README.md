@@ -31,6 +31,7 @@ The mature artifact housekeeping slice, cache inventory/policy classification an
 - explicit protection and `keep_latest` for artifacts, caches, and workflow runs;
 - workflow-run policy selectors for repository, workflow, branch, event, and conclusion, with resource-specific `[defaults.runs]` retention;
 - policy-driven workflow-run purge planning: exact completed runs classified `Delete` feed the existing immutable dependency-aware run-purge pipeline;
+- persistent, exact workflow-run protections shared by the CLI and future daemon/GUI, with identity verification and mandatory guards in planning, revalidation, and execution;
 - immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout;
@@ -42,6 +43,8 @@ The mature artifact housekeeping slice, cache inventory/policy classification an
 Actions-cache mutation is implemented through a distinct exact-ID purge capability: immutable cache plan, remote revalidation, explicit authorization, write-ahead intent, paced deletion, post-delete absence verification, and separate durable audit. Release assets, packages, and ordinary workflow artifacts are not reachable through the cache-purge capability.
 
 Workflow-run retention is policy-driven as well as explicitly selectable. `classify runs` is read-only; `purge plan runs --policy PATH` selects only completed runs classified `Delete`, records the policy fingerprint, and feeds those exact runs into the same dependency-aware run-purge machinery used by `--run-id` and `--all-completed`. Active runs are never policy deletion candidates. `keep_latest` is evaluated per repository/workflow/branch family so broad owner rules do not accidentally keep only a handful of runs globally.
+
+An exact local protection prevents this version of gh-housekeeper from purging a run, even if an older immutable plan contains it. Initialize the separate local protection store before run classification or purge. Protection does not change GitHub's own run retention: an expired run may disappear normally and leave a locally recorded stale protection.
 
 Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
@@ -69,6 +72,15 @@ gh-housekeeper runs
 gh-housekeeper runs --repo example-user/project-alpha
 gh-housekeeper runs --older-than 30d --completed-only
 gh-housekeeper runs --workflow 'Rust *' --branch 'work/*' --conclusion failure
+
+# One-time explicit initialization. Missing or damaged protection state blocks run purge.
+gh-housekeeper runs protections init
+
+# A verified run is protected from gh-housekeeper across CLI restarts.
+gh-housekeeper runs protect --repo example-user/project-alpha --run-id 123456 --reason 'Evidence for review'
+gh-housekeeper runs protections --repo example-user/project-alpha
+gh-housekeeper runs protections --verify
+gh-housekeeper runs unprotect --repo example-user/project-alpha --run-id 123456
 
 # Build an immutable workflow-run purge plan. This does not delete anything.
 gh-housekeeper purge plan runs \\

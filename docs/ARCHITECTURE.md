@@ -107,6 +107,8 @@ Cache policy classification remains independently read-only through `classify ca
 
 Workflow-run policy classification is also implemented. `classify runs` evaluates the complete workflow-run snapshot; active runs are always retained. `purge plan runs --policy PATH` selects exact completed runs classified `Delete` and feeds them into the existing dependency-aware `RunPurgePlan` path. No policy-specific delete executor exists.
 
+Exact workflow-run protections live in a separate versioned store under the platform configuration directory. Core defines the run identity, `ProtectionIndex`, and `RunProtectionSource`/target-lease interfaces. Storage implements durable reads/writes and interprocess locks; policy receives an immutable validated index and never opens files. The GitHub adapter verifies canonical repository identity on exact run lookup, rather than treating the caller's repository reference as remote proof. All three run-purge services require the protection capability; the executor holds a per-run lease through the existing ordered DELETE sequence. A daemon and GUI can call those same services without duplicating protection state or deletion logic.
+
 Before multi-resource destructive planning, dependency resolution must sit between classification and plan construction so a planned workflow-run deletion cannot double-count or redundantly delete artifacts already removed by that run. Storage estimates must keep artifact bytes and cache bytes separate; run/log counts must not be invented as byte usage when GitHub does not expose reliable bytes.
 
 Deletion follows this artifact-reference invariant:

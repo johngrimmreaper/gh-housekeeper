@@ -108,6 +108,8 @@ A run may enter a purge plan only when its snapshotted status is `completed`. Se
 
 Planning refuses incomplete repository/run inventory and then exact-lookups each selected run before snapshotting its run-scoped artifacts. If the run changes or disappears during this dependency-snapshot phase, the plan is not silently retargeted.
 
+The versioned local run-protection store must be explicitly initialized and readable for every run purge mode. An exact protection removes a run from bulk/policy planning and rejects an explicit-ID plan; uncertain identity blocks planning. Revalidation rereads local protection state before consent, including for an old plan created before protection was added. The existing executor obtains an interprocess lock for each run and checks the store again before its first DELETE of run logs. It holds that lock through artifact cleanup and run deletion. A concurrent protect operation takes the same lock before its remote lookup and only reports success after durable local persistence. A corrupt or missing store, lock failure, or identity mismatch cannot authorize DELETE.
+
 Before consent, revalidation exact-lookups the planned run and re-enumerates its run-owned artifacts. Changed artifacts and newly-visible unexpected artifacts make the reviewed plan unsafe. Missing planned artifacts may be represented as already absent; they do not authorize a replacement target.
 
 After explicit authorization, the CLI must first durably persist a write-ahead purge intent. If the local state directory cannot be resolved or the intent cannot be committed, the purge is refused before the first DELETE. The destructive order is then fixed:
@@ -132,6 +134,8 @@ A successful run DELETE is not accepted blindly. The provider must subsequently 
 Interactive workflow-run purge requires a terminal. A plan touching one repository requires the exact lowercase word `purge`; a plan touching multiple repositories requires an exact count-bound phrase such as `purge 47 repositories`, derived from the immutable reviewed plan. This makes a stale or unexpectedly broader multi-repository plan visibly harder to authorize by accident. Non-interactive purge requires explicit `--yes`. This authorization is distinct from artifact cleanup's lowercase `delete` confirmation.
 
 Workflow-run purge intent and execution records live under the separate versioned `run-purge-audit/v1` state directory. The intent preserves the immutable plan, reviewed remote state, and explicit authorization before mutation. The final record preserves complete planned run and artifact snapshots plus every dependency/final-run outcome and links to the corresponding intent. An intent with no matching final record is reported as pending; this is deliberately treated as possible partial/uncertain remote execution and requires inspection before retry. Audit state remains observational and can never authorize another deletion.
+
+Run protections are intentional local state under `run-protections/v1.json`, separate from cache, monitoring history, and audit. The store uses a stable lock file, a temporary file synchronized before atomic replacement, and directory synchronization on Unix. Missing/corrupt state fails closed; a remote run that has expired normally remains a stale local annotation until explicitly removed. An older gh-housekeeper binary does not know this protection feature and must be upgraded before relying on it.
 
 ## Explainability
 
@@ -168,4 +172,3 @@ Before consent, every planned cache is exact-looked-up and compared with its imm
 Interactive confirmation is bound to the reviewed blast radius using a phrase such as `purge 9 caches from 5 repositories`. Cache purge uses the same conservative two-second mutation pacing and 250-request API headroom guard as workflow-run purge. DELETE requests are single-attempt and are never blindly retried.
 
 Cache purge intent and final records live separately under `cache-purge-audit/v1`. A pending intent means authorization was durably recorded but no linked final execution record exists; remote state must be inspected before retrying.
-
