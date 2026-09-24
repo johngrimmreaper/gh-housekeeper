@@ -1102,7 +1102,7 @@ fn execution_item_hit_rate_limit(item: &RunPurgeExecutionItem) -> bool {
 }
 
 fn is_provider_rate_limit_error(error: &str) -> bool {
-    error.starts_with("provider rate limit reached")
+    error.contains("provider rate limit reached")
 }
 
 fn artifact_result(
@@ -1430,6 +1430,19 @@ mod tests {
             }
             Ok(DeleteOutcome::Deleted)
         }
+    }
+
+    #[test]
+    fn recognizes_direct_and_nested_provider_rate_limit_errors() {
+        assert!(is_provider_rate_limit_error(
+            "provider rate limit reached: API rate limit exceeded"
+        ));
+        assert!(is_provider_rate_limit_error(
+            "provider reported successful workflow-run deletion, but post-delete verification failed: provider rate limit reached: API rate limit exceeded"
+        ));
+        assert!(!is_provider_rate_limit_error(
+            "provider request failed with HTTP 403: Resource not accessible by integration"
+        ));
     }
 
     #[tokio::test]
