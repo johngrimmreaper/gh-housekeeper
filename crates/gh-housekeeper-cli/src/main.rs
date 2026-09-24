@@ -2278,7 +2278,7 @@ fn read_run_purge_plan(path: &std::path::Path) -> Result<RunPurgePlan> {
     Ok(plan)
 }
 
-fn write_json_atomic_new<T: serde::Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
+fn write_json_atomic_new(path: &std::path::Path, value: &RunPurgePlan) -> Result<()> {
     if path.exists() {
         anyhow::bail!(
             "refusing to overwrite existing purge-plan file {}",
