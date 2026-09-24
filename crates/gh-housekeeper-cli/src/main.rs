@@ -22,6 +22,7 @@ use gh_housekeeper_storage::{
 };
 use serde_json::json;
 use std::{
+    collections::HashSet,
     fs,
     io::{self, IsTerminal, Write},
     path::PathBuf,
@@ -418,6 +419,13 @@ enum PurgePlanResource {
 struct PurgeRunsPlanCommand {
     #[command(flatten)]
     scope: ScopeArgs,
+
+    #[arg(
+        long,
+        conflicts_with_all = ["repo", "owner"],
+        help = "Explicitly target all repositories owned by the authenticated account"
+    )]
+    all_repositories: bool,
 
     #[arg(
         long = "run-id",
@@ -1865,6 +1873,25 @@ async fn run_purge_plan_runs(
         );
     }
 
+    let scan_options = if command.all_repositories {
+        let account = provider
+            .account()
+            .await
+            .context("failed to resolve authenticated account for --all-repositories")?;
+        ScanOptions {
+            scope: ScanScope::Owner(account.login),
+            exclude_repositories: command.scope.exclude_repositories.clone(),
+            concurrency: command.scope.concurrency.clamp(1, 16),
+        }
+    } else {
+        if command.scope.repo.is_none() && command.scope.owner.is_none() {
+            anyhow::bail!(
+                "workflow-run purge requires an explicit scope: pass --repo OWNER/REPO, --owner OWNER, or --all-repositories"
+            );
+        }
+        command.scope.scan_options()
+    };
+
     let older_than = command
         .older_than
         .as_deref()
@@ -1880,7 +1907,7 @@ async fn run_purge_plan_runs(
     }
 
     let snapshot = WorkflowRunInventoryService::new(provider.clone())
-        .scan(command.scope.scan_options())
+        .scan(scan_options)
         .await?;
 
     if !snapshot.issues.is_empty() {
@@ -2011,6 +2038,10 @@ async fn run_purge_plan_runs(
             println!("Purge plan:           {}", command.output.display());
             println!("Plan schema:          {}", plan.schema_version());
             println!("Runs:                 {}", plan.summary().run_count());
+            println!(
+                "Repositories:         {}",
+                run_purge_repository_count(&plan)
+            );
             println!("Artifacts:            {}", plan.summary().artifact_count());
             println!(
                 "Artifact storage:      {}",
@@ -2140,6 +2171,8 @@ async fn run_purge_apply(
         matches!(command.format, OutputFormat::Json),
     );
 
+    let repository_count = run_purge_repository_count(&plan);
+    let required_confirmation = run_purge_confirmation_phrase(repository_count);
     let authorization = if command.yes {
         ExecutionAuthorization::automation_yes()
     } else {
@@ -2149,7 +2182,10 @@ async fn run_purge_apply(
             );
         }
 
-        eprint!("Type 'purge' to remove the reviewed logs, artifacts, and workflow runs: ");
+        eprint!(
+            "Type '{}' to remove the reviewed logs, artifacts, and workflow runs: ",
+            required_confirmation
+        );
         io::stderr()
             .flush()
             .context("failed to flush purge confirmation prompt")?;
@@ -2157,7 +2193,7 @@ async fn run_purge_apply(
         io::stdin()
             .read_line(&mut response)
             .context("failed to read purge confirmation")?;
-        authorize_run_purge(false, true, Some(&response))?
+        authorize_run_purge(false, true, Some(&response), &required_confirmation)?
     };
 
     let paths = StatePaths::discover().context(
@@ -2407,6 +2443,10 @@ fn print_run_purge_review(
         format!("Plan:                 {}", plan_path.display()),
         format!("Account:              {}", plan.account().login),
         format!("Runs:                 {}", plan.summary().run_count()),
+        format!(
+            "Repositories:         {}",
+            run_purge_repository_count(plan)
+        ),
         format!("Artifacts:            {}", plan.summary().artifact_count()),
         format!(
             "Artifact storage:      {}",
@@ -2442,10 +2482,27 @@ fn print_run_purge_review(
     }
 }
 
+fn run_purge_repository_count(plan: &RunPurgePlan) -> usize {
+    plan.targets()
+        .iter()
+        .map(|target| target.run().repository.full_name.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn run_purge_confirmation_phrase(repository_count: usize) -> String {
+    if repository_count > 1 {
+        format!("purge {repository_count} repositories")
+    } else {
+        "purge".to_owned()
+    }
+}
+
 fn authorize_run_purge(
     yes: bool,
     stdin_is_terminal: bool,
     response: Option<&str>,
+    required_confirmation: &str,
 ) -> Result<ExecutionAuthorization> {
     if yes {
         return Ok(ExecutionAuthorization::automation_yes());
@@ -2453,8 +2510,10 @@ fn authorize_run_purge(
     if !stdin_is_terminal {
         anyhow::bail!("interactive purge authorization requires a terminal");
     }
-    if response.map(str::trim) != Some("purge") {
-        anyhow::bail!("purge confirmation did not match exact lowercase word 'purge'");
+    if response.map(str::trim) != Some(required_confirmation) {
+        anyhow::bail!(
+            "purge confirmation did not match exact required phrase '{required_confirmation}'"
+        );
     }
     Ok(ExecutionAuthorization::interactive_confirmation())
 }
@@ -3119,22 +3178,35 @@ mod tests {
 
     #[test]
     fn purge_authorization_requires_exact_lowercase_confirmation() {
-        let automated = authorize_run_purge(true, false, None).unwrap();
+        let automated = authorize_run_purge(true, false, None, "purge").unwrap();
         assert_eq!(
             automated.kind(),
             gh_housekeeper_core::ExecutionAuthorizationKind::AutomationYes
         );
 
-        let interactive = authorize_run_purge(false, true, Some("purge\n")).unwrap();
+        let interactive = authorize_run_purge(false, true, Some("purge\n"), "purge").unwrap();
         assert_eq!(
             interactive.kind(),
             gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation
         );
 
-        assert!(authorize_run_purge(false, false, None).is_err());
-        assert!(authorize_run_purge(false, true, Some("delete\n")).is_err());
-        assert!(authorize_run_purge(false, true, Some("PURGE\n")).is_err());
-        assert!(authorize_run_purge(false, true, Some("\n")).is_err());
+        assert!(authorize_run_purge(false, false, None, "purge").is_err());
+        assert!(authorize_run_purge(false, true, Some("delete\n"), "purge").is_err());
+        assert!(authorize_run_purge(false, true, Some("PURGE\n"), "purge").is_err());
+        assert!(authorize_run_purge(false, true, Some("\n"), "purge").is_err());
+
+        let global_phrase = run_purge_confirmation_phrase(47);
+        assert_eq!(global_phrase, "purge 47 repositories");
+        assert!(
+            authorize_run_purge(
+                false,
+                true,
+                Some("purge 47 repositories\n"),
+                &global_phrase
+            )
+            .is_ok()
+        );
+        assert!(authorize_run_purge(false, true, Some("purge\n"), &global_phrase).is_err());
     }
 
     #[test]
