@@ -51,8 +51,8 @@ pub use run::{
     WorkflowRunPurgeProvider,
 };
 pub use run_protection::{
-    ProtectionAssessment, ProtectionIndex, ProtectionReviewCode, RunProtection,
-    RunProtectionError, RunProtectionGuard, RunProtectionKey, RunProtectionSource,
+    ProtectionAssessment, ProtectionIndex, ProtectionReviewCode, RunProtection, RunProtectionError,
+    RunProtectionGuard, RunProtectionKey, RunProtectionSource,
 };
 pub use run_purge::{
     RUN_PURGE_PLAN_SCHEMA_VERSION, RunPurgeArtifactResult, RunPurgeError, RunPurgeExecutionItem,

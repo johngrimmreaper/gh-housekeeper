@@ -123,11 +123,14 @@ impl RunProtectionStore {
     }
 
     fn read_unlocked(&self) -> Result<ProtectionIndex, RunProtectionStoreError> {
-        let bytes = fs::read(self.path()).map_err(|error| self.io("read protection file", error))?;
+        let bytes =
+            fs::read(self.path()).map_err(|error| self.io("read protection file", error))?;
         let file: ProtectionFile = serde_json::from_slice(&bytes)
             .map_err(|error| RunProtectionStoreError::Corrupt(error.to_string()))?;
         if file.schema_version != RUN_PROTECTIONS_SCHEMA_VERSION {
-            return Err(RunProtectionStoreError::UnsupportedVersion(file.schema_version));
+            return Err(RunProtectionStoreError::UnsupportedVersion(
+                file.schema_version,
+            ));
         }
         ProtectionIndex::new(file.protections).map_err(RunProtectionStoreError::Invalid)
     }
@@ -191,11 +194,13 @@ impl RunProtectionLease {
         protection: RunProtection,
     ) -> Result<ProtectOutcome, RunProtectionStoreError> {
         if self.key != protection.key {
-            return Err(RunProtectionStoreError::Invalid(RunProtectionError::Invalid(
-                "protection does not match the locked run".to_owned(),
-            )));
+            return Err(RunProtectionStoreError::Invalid(
+                RunProtectionError::Invalid("protection does not match the locked run".to_owned()),
+            ));
         }
-        protection.validate().map_err(RunProtectionStoreError::Invalid)?;
+        protection
+            .validate()
+            .map_err(RunProtectionStoreError::Invalid)?;
         let _global = self.store.global_lock(false)?;
         let index = self.store.read_unlocked()?;
         if let Some(existing) = index.entries().iter().find(|entry| entry.key == self.key) {
@@ -267,16 +272,17 @@ impl RunProtectionSource for RunProtectionStore {
         &self,
         key: &RunProtectionKey,
     ) -> Result<Box<dyn RunProtectionGuard>, RunProtectionError> {
-        Ok(Box::new(
-            self.acquire_target(key)
-                .await
-                .map_err(|error| RunProtectionError::Store(error.to_string()))?,
-        ))
+        Ok(Box::new(self.acquire_target(key).await.map_err(
+            |error| RunProtectionError::Store(error.to_string()),
+        )?))
     }
 }
 
 fn open_lock(path: &Path, create: bool) -> Result<File, RunProtectionStoreError> {
-    if path.symlink_metadata().is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
         return Err(RunProtectionStoreError::Lock(format!(
             "refusing symbolic link lock at {}",
             path.display()
@@ -328,7 +334,9 @@ fn stable_key_hash(key: &RunProtectionKey) -> u64 {
 
 #[derive(Debug, Error)]
 pub enum RunProtectionStoreError {
-    #[error("run protection store not initialized at {0}; run 'gh-housekeeper runs protections init'")]
+    #[error(
+        "run protection store not initialized at {0}; run 'gh-housekeeper runs protections init'"
+    )]
     NotInitialized(PathBuf),
     #[error("run protection store already initialized at {0}")]
     AlreadyInitialized(PathBuf),
@@ -354,7 +362,7 @@ pub enum RunProtectionStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeZone, Utc};
 
     fn test_store() -> RunProtectionStore {
         let dir = std::env::temp_dir().join(format!(
@@ -402,7 +410,10 @@ mod tests {
         store.initialize_empty().unwrap();
         let entry = protection();
         let lease = store.acquire_target(&entry.key).await.unwrap();
-        assert_eq!(lease.protect_verified(entry.clone()).unwrap(), ProtectOutcome::Inserted);
+        assert_eq!(
+            lease.protect_verified(entry.clone()).unwrap(),
+            ProtectOutcome::Inserted
+        );
         let mut repeated = entry.clone();
         repeated.reason = "changed reason".to_owned();
         assert_eq!(
@@ -425,7 +436,10 @@ mod tests {
         let store = test_store();
         store.initialize_empty().unwrap();
         fs::write(store.path(), b"{").unwrap();
-        assert!(matches!(store.load_strict(), Err(RunProtectionStoreError::Corrupt(_))));
+        assert!(matches!(
+            store.load_strict(),
+            Err(RunProtectionStoreError::Corrupt(_))
+        ));
         let entry = protection();
         fs::write(
             store.path(),
@@ -436,7 +450,10 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(matches!(store.load_strict(), Err(RunProtectionStoreError::Invalid(_))));
+        assert!(matches!(
+            store.load_strict(),
+            Err(RunProtectionStoreError::Invalid(_))
+        ));
         let _ = fs::remove_dir_all(store.directory.parent().unwrap());
     }
 }

@@ -1,8 +1,8 @@
 use crate::{
     Account, Artifact, DeleteOutcome, ExecutionAuthorization, ExecutionAuthorizationKind,
-    ProtectionAssessment, ProviderError, ProviderTelemetry, RunProtectionError,
-    RunProtectionKey, RunProtectionSource, ScanScope, WorkflowRun, WorkflowRunInventorySnapshot,
-    WorkflowRunProvider, WorkflowRunPurgeProvider,
+    ProtectionAssessment, ProviderError, ProviderTelemetry, RunProtectionError, RunProtectionKey,
+    RunProtectionSource, ScanScope, WorkflowRun, WorkflowRunInventorySnapshot, WorkflowRunProvider,
+    WorkflowRunPurgeProvider,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -500,10 +500,10 @@ impl RunPurgeRevalidationService {
         for target in plan.targets() {
             let planned = target.run();
 
-            let assessment = self
-                .protections
-                .snapshot()?
-                .assess(&provider_instance, &account, planned);
+            let assessment =
+                self.protections
+                    .snapshot()?
+                    .assess(&provider_instance, &account, planned);
             if let Some(reason) = protection_block_reason(assessment) {
                 items.push(RunPurgeRevalidationItem {
                     repository: planned.repository.full_name.clone(),
@@ -861,7 +861,11 @@ impl RunPurgeExecutionService {
         })
     }
 
-    async fn execute_target(&self, target: &RunPurgeTarget, account: &Account) -> RunPurgeExecutionItem {
+    async fn execute_target(
+        &self,
+        target: &RunPurgeTarget,
+        account: &Account,
+    ) -> RunPurgeExecutionItem {
         let planned = target.run();
         let provider_instance = self.provider.provider_instance();
         let key = RunProtectionKey::for_run(&provider_instance, account, planned);
@@ -1925,10 +1929,12 @@ mod tests {
             .await
             .unwrap();
         assert!(!after_protection.is_safe_to_apply());
-        assert!(after_protection.items[0]
-            .error
-            .as_deref()
-            .is_some_and(|error| error.starts_with("local_protection:")));
+        assert!(
+            after_protection.items[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("local_protection:"))
+        );
 
         // An intent could already have been recorded from the earlier safe report.
         // The same executor must still block before deleting even the run logs.

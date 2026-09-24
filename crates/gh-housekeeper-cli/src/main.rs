@@ -8,21 +8,21 @@ use gh_housekeeper_core::{
     CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
-    PressureTransitionEvaluation, RevalidationService, RevalidationState, RunPurgeExecutionService,
-    RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService,
-    RunPurgeSelection, RunPurgeSelectionMode, RunProtection, RunProtectionKey, RepositoryRef,
-    ScanOptions, ScanScope, StorageBucket, StoragePressureLevel, WorkflowRun,
-    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
-    format_bytes, matches_glob,
-    monitoring_scheduler_cancellation, parse_duration,
+    PressureTransitionEvaluation, RepositoryRef, RevalidationService, RevalidationState,
+    RunProtection, RunProtectionKey, RunPurgeExecutionService, RunPurgeExecutionState,
+    RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService, RunPurgeSelection,
+    RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel,
+    WorkflowRun, WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider,
+    aggregate_caches, format_bytes, matches_glob, monitoring_scheduler_cancellation,
+    parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
     AppConfig, AuditReadIssue, AuditRecord, AuditStore, CachePurgeAuditReadIssue,
     CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore, MonitoringConfig,
-    MonitoringHistoryStore, MonitoringReadIssue, RunPurgeAuditReadIssue, RunPurgeAuditRecord,
-    RunProtectionStore, RunPurgeAuditStore, StatePaths,
+    MonitoringHistoryStore, MonitoringReadIssue, RunProtectionStore, RunPurgeAuditReadIssue,
+    RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
 };
 use serde_json::json;
 use std::{
@@ -247,7 +247,10 @@ struct RunsUnprotectCommand {
     repo: String,
     #[arg(long)]
     run_id: u64,
-    #[arg(long, help = "Disambiguate a stale repository name reused by a different repository ID")]
+    #[arg(
+        long,
+        help = "Disambiguate a stale repository name reused by a different repository ID"
+    )]
     repo_id: Option<u64>,
 }
 
@@ -816,9 +819,7 @@ async fn main() -> Result<()> {
         Command::Repos(command) => run_repos(provider()?, command).await,
         Command::Artifacts(command) => run_artifacts(provider()?, command).await,
         Command::Runs(mut command) => match command.action.take() {
-            Some(RunsAction::Protect(action)) => {
-                run_runs_protect(provider()?, action).await
-            }
+            Some(RunsAction::Protect(action)) => run_runs_protect(provider()?, action).await,
             Some(RunsAction::Protections(action)) => {
                 run_runs_protections(api_url.as_deref(), action).await
             }
@@ -1675,17 +1676,28 @@ async fn run_runs_unprotect(api_url: Option<&str>, command: RunsUnprotectCommand
         })
         .collect::<Vec<_>>();
     let Some(entry) = matches.first() else {
-        println!("No local protection for {}#{}", command.repo, command.run_id);
+        println!(
+            "No local protection for {}#{}",
+            command.repo, command.run_id
+        );
         return Ok(());
     };
     if matches.len() > 1 {
-        anyhow::bail!("multiple local entries match; pass --repo-id to choose the exact repository");
+        anyhow::bail!(
+            "multiple local entries match; pass --repo-id to choose the exact repository"
+        );
     }
     let key = entry.key.clone();
     if store.unprotect(&key).await? {
-        println!("Removed local protection for {}#{}", command.repo, command.run_id);
+        println!(
+            "Removed local protection for {}#{}",
+            command.repo, command.run_id
+        );
     } else {
-        println!("Local protection was already absent for {}#{}", command.repo, command.run_id);
+        println!(
+            "Local protection was already absent for {}#{}",
+            command.repo, command.run_id
+        );
     }
     Ok(())
 }
@@ -1736,12 +1748,17 @@ async fn run_runs_protections(
             if rows.is_empty() {
                 println!("No local workflow-run protections matched.");
             } else {
-                println!("{:<14} {:<40} {:<22} REASON", "RUN ID", "REPOSITORY", "STATUS");
+                println!(
+                    "{:<14} {:<40} {:<22} REASON",
+                    "RUN ID", "REPOSITORY", "STATUS"
+                );
                 for row in rows {
                     println!(
                         "{:<14} {:<40} {:<22} {}",
                         row["protection"]["key"]["run_id"],
-                        row["protection"]["repository"]["full_name"].as_str().unwrap_or("?"),
+                        row["protection"]["repository"]["full_name"]
+                            .as_str()
+                            .unwrap_or("?"),
                         row["status"].as_str().unwrap_or("?"),
                         row["protection"]["reason"].as_str().unwrap_or("?")
                     );
@@ -1761,7 +1778,10 @@ async fn verify_run_protection(
     entry: &RunProtection,
 ) -> (&'static str, String) {
     if provider.provider_instance() != entry.key.provider_instance || *account != entry.account {
-        return ("unverifiable", "provider instance or account differs".to_owned());
+        return (
+            "unverifiable",
+            "provider instance or account differs".to_owned(),
+        );
     }
     let repository = match provider
         .repositories(&ScanScope::Repository(entry.repository.full_name.clone()))
@@ -1769,7 +1789,12 @@ async fn verify_run_protection(
     {
         Ok(repositories) => match repositories.into_iter().next() {
             Some(repository) => repository,
-            None => return ("unverifiable", "repository lookup returned no result".to_owned()),
+            None => {
+                return (
+                    "unverifiable",
+                    "repository lookup returned no result".to_owned(),
+                );
+            }
         },
         Err(error) => return ("unverifiable", error.to_string()),
     };
@@ -1777,7 +1802,10 @@ async fn verify_run_protection(
         return ("identity_mismatch", "repository ID differs".to_owned());
     }
     if repository.full_name != entry.repository.full_name {
-        return ("repository_renamed", format!("current name: {}", repository.full_name));
+        return (
+            "repository_renamed",
+            format!("current name: {}", repository.full_name),
+        );
     }
     match provider
         .workflow_run(&RepositoryRef::from(&repository), entry.key.run_id)
@@ -1800,9 +1828,10 @@ async fn verify_run_protection(
                 }
             }
         }
-        Ok(None) | Err(gh_housekeeper_core::ProviderError::NotFound(_)) => {
-            ("stale_missing", "run absent from verified repository".to_owned())
-        }
+        Ok(None) | Err(gh_housekeeper_core::ProviderError::NotFound(_)) => (
+            "stale_missing",
+            "run absent from verified repository".to_owned(),
+        ),
         Err(error) => ("unverifiable", error.to_string()),
     }
 }
@@ -2427,11 +2456,8 @@ async fn run_purge_plan_runs(
             .with_context(|| format!("invalid policy file {}", policy_path.display()))?;
         let engine = PolicyEngine::new(config)?;
         let policy_hash = engine.config().fingerprint();
-        let report = engine.classify_workflow_run_snapshot(
-            &snapshot,
-            &protection_index,
-            &provider_instance,
-        );
+        let report =
+            engine.classify_workflow_run_snapshot(&snapshot, &protection_index, &provider_instance);
         let delete_identities = report.delete_identities();
         let selected = snapshot
             .runs
@@ -4429,8 +4455,7 @@ mod tests {
         };
         assert!(matches!(list.action, Some(RunsAction::Protections(_))));
 
-        let init = Cli::try_parse_from(["gh-housekeeper", "runs", "protections", "init"])
-            .unwrap();
+        let init = Cli::try_parse_from(["gh-housekeeper", "runs", "protections", "init"]).unwrap();
         let Command::Runs(init) = init.command else {
             panic!("expected runs command");
         };
