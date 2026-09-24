@@ -399,7 +399,6 @@ impl CacheProvider for GithubClient {
     }
 }
 
-
 #[async_trait]
 impl WorkflowRunProvider for GithubClient {
     async fn workflow_runs(&self, repository: &Repository) -> ProviderResult<Vec<WorkflowRun>> {
@@ -437,10 +436,7 @@ impl WorkflowRunProvider for GithubClient {
         run_id: u64,
     ) -> ProviderResult<Option<WorkflowRun>> {
         validate_full_name(&repository.full_name)?;
-        let path = format!(
-            "/repos/{}/actions/runs/{run_id}",
-            repository.full_name
-        );
+        let path = format!("/repos/{}/actions/runs/{run_id}", repository.full_name);
         self.get_optional_json::<GithubWorkflowRun>(&path)
             .await
             .map(|run| run.map(|run| run.into_domain(repository.clone())))
@@ -479,7 +475,6 @@ impl WorkflowRunProvider for GithubClient {
     }
 }
 
-
 #[async_trait]
 impl WorkflowRunPurgeProvider for GithubClient {
     async fn workflow_run_artifact(
@@ -504,10 +499,7 @@ impl WorkflowRunPurgeProvider for GithubClient {
         run_id: u64,
     ) -> ProviderResult<DeleteOutcome> {
         validate_full_name(&repository.full_name)?;
-        let path = format!(
-            "/repos/{}/actions/runs/{run_id}/logs",
-            repository.full_name
-        );
+        let path = format!("/repos/{}/actions/runs/{run_id}/logs", repository.full_name);
         match self.send_with_policy(Method::DELETE, &path, true).await? {
             Some(_) => Ok(DeleteOutcome::Deleted),
             None => Ok(DeleteOutcome::AlreadyAbsent),
@@ -623,7 +615,6 @@ impl From<GithubRepository> for Repository {
         }
     }
 }
-
 
 #[derive(Deserialize)]
 struct GithubWorkflowRunPage {
@@ -868,7 +859,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn lists_workflow_runs_with_pagination_and_maps_metadata() {
         let page_one = r#"{"total_count":2,"workflow_runs":[{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z"}]}"#.to_owned();
@@ -927,10 +917,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let artifacts =
-            WorkflowRunProvider::workflow_run_artifacts(&client, &repository, 7001)
-                .await
-                .unwrap();
+        let artifacts = WorkflowRunProvider::workflow_run_artifacts(&client, &repository, 7001)
+            .await
+            .unwrap();
         server.join().unwrap();
 
         assert_eq!(run.id, 7001);
@@ -952,7 +941,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn deletes_run_logs_before_the_run_through_distinct_endpoints() {
         let (base_url, requests, server) =
@@ -965,10 +953,9 @@ mod tests {
             full_name: "example-user/project-alpha".to_owned(),
         };
 
-        let logs =
-            WorkflowRunPurgeProvider::delete_workflow_run_logs(&client, &repository, 7001)
-                .await
-                .unwrap();
+        let logs = WorkflowRunPurgeProvider::delete_workflow_run_logs(&client, &repository, 7001)
+            .await
+            .unwrap();
         let run = WorkflowRunPurgeProvider::delete_workflow_run(&client, &repository, 7001)
             .await
             .unwrap();
