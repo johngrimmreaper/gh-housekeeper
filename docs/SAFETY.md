@@ -187,3 +187,8 @@ The account-usage history is stored separately under `account-usage/v1/`; existi
 No included allowance is assumed from the authenticated account or a repository plan. Percentage-used, remaining-balance, warning, or critical calculations must stay unavailable until an allowance has explicit trustworthy provenance. Quota pressure must never create `ExecutionAuthorization`, select deletion targets, bypass local protections, or invoke any existing DELETE executor.
 
 `monitor account once` is an explicit one-shot GET + local persistence operation. `monitor account history` is local-only: its dispatch path does not construct a GitHub provider, discover a token, or contact the network. Neither command daemonizes itself or emits unsolicited notifications.
+
+
+The allowance evaluator is deliberately exact-SKU and exact-unit. It requires explicit allowance provenance and an explicit quantity basis. Missing matching usage is unknown, duplicate exact rows are ambiguous, and stale observations cannot create warning/critical alert keys. This prevents a generic billing row from silently becoming a plan-wide Actions-minute balance.
+
+GitHub billing discounts must not be interpreted as synonymous with included-plan consumption. Discounted Actions usage can have multiple causes, so gh-housekeeper does not derive the global plan allowance or remaining included minutes from discount fields alone. A later user-configured aggregation rule must be labeled as such and must not be presented as provider-reported truth.

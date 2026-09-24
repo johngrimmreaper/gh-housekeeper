@@ -185,3 +185,12 @@ Storage uses a separately versioned `AccountUsageHistoryStore` rooted at `accoun
 No allowance or quota is currently authoritative in this model. A later evaluator may derive remaining allowance and warning/critical state only when paired with an allowance whose provenance is explicit (provider-reported or user-configured). The billing usage capability has no cleanup planning, authorization, revalidation, or DELETE dependency.
 
 The CLI exposes this boundary through `monitor account once` and `monitor account history`. The one-shot query requires an explicit billing owner and monthly period, then persists the observation. History requires the same owner/period key and reads local state only; it does not construct a provider. Neither command starts a scheduler or background process.
+
+
+### Strict allowance evaluation
+
+`evaluate_usage_quota` is intentionally narrower than a GitHub plan calculator. It accepts one `UsageAllowance` with explicit provenance, product, SKU, unit, quantity, and quantity basis. It matches exactly one corresponding usage row. Zero matches are unknown rather than assumed zero; multiple exact matches are ambiguous rather than silently summed; different SKUs are never combined by this primitive.
+
+The evaluator supports healthy/warning/critical percentage thresholds only after the allowance passes validation. Stale or unavailable observations cannot emit quota alerts. A warning/critical result carries a `UsageQuotaAlertKey` whose identity is billing owner + resource ID + billing period + threshold. This is the intended durable deduplication key for a later daemon/store layer.
+
+The current GitHub summary adapter is not treated as an authoritative source of the account's included Actions-minute allowance. GitHub reports SKU usage and billing discounts, but the allowance is not present in the summary payload and discount semantics are broader than plan-quota consumption. A future plan-wide Actions allowance adapter must either obtain a trustworthy provider-reported entitlement or require an explicitly labeled user configuration and a documented aggregation rule.
