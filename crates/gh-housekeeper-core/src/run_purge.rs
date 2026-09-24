@@ -675,7 +675,8 @@ impl RunPurgeExecutionService {
                     target,
                     RunPurgeExecutionState::Blocked,
                     Some(
-                        "batch halted after provider rate limit; target was not attempted".to_owned(),
+                        "batch halted after provider rate limit; target was not attempted"
+                            .to_owned(),
                     ),
                 ));
                 continue;
