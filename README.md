@@ -277,9 +277,9 @@ CI does not upload build artifacts on ordinary commits.
 
 ## Monitoring configuration
 
-Persistent application configuration lives at the platform-specific gh-housekeeper configuration directory as `config.toml`. Schema version 1 currently contains a monitoring check interval plus optional absolute warning/critical storage thresholds.
+Persistent application configuration lives at the platform-specific gh-housekeeper configuration directory as `config.toml`. Schema version 2 contains the existing artifact-monitoring settings plus optional account-usage allowance configuration. Schema version 1 files remain readable and are upgraded in memory with account-usage monitoring safely unconfigured; they are not silently rewritten.
 
-Missing configuration is safe: gh-housekeeper uses an in-memory default with a 30-minute future monitoring interval and **no warning or critical threshold**. It does not invent a GitHub storage quota.
+Missing configuration is safe: gh-housekeeper uses in-memory defaults with 30-minute monitoring cadences, **no artifact warning/critical threshold**, **no account-usage percentage thresholds**, and **no allowances**. It does not invent a GitHub storage quota or plan entitlement.
 
 `gh-housekeeper status` scans the scope selected by `--owner`/`--repo` (or all accessible repositories when no scope is supplied), sums artifact metadata for that scan, and classifies the result as `unconfigured`, `healthy`, `warning`, or `critical`.
 
@@ -338,4 +338,34 @@ Billing owner and period are explicit and independent of repository scan scope. 
 
 The core now also contains a strict, provider-neutral allowance evaluator. It calculates percentage/remaining quantity only when given an explicit allowance with provenance, exact product/SKU/unit, and an explicit quantity basis (`gross`, `discount`, or `net`). It refuses ambiguous duplicate rows, does not aggregate different SKUs, marks stale observations as unknown, and emits an alert key scoped by billing owner + resource + billing period + threshold.
 
-This evaluator is **not automatically wired to the global GitHub Actions plan allowance**. GitHub's current billing summary does not report the plan allowance itself, while billing discounts can represent more than included-plan consumption (for example other free/discounted Actions usage). Therefore gh-housekeeper still does not infer a plan, hard-code the documented plan table, or present a reconstructed plan-wide remaining balance as official. Persistent allowance configuration, durable alert deduplication, daemon notification delivery, and GUI wiring are still pending.
+This evaluator is **not automatically wired to the global GitHub Actions plan allowance**. GitHub's current billing summary does not report the plan allowance itself, while billing discounts can represent more than included-plan consumption (for example other free/discounted Actions usage). Therefore gh-housekeeper still does not infer a plan, hard-code the documented plan table, or present a reconstructed plan-wide remaining balance as official.
+
+Schema 2 configuration can contain explicitly user-supplied exact-SKU allowances and warning/critical percentages. For example, the following is deliberately an arbitrary local rule, **not** a statement about a GitHub plan:
+
+```toml
+schema_version = 2
+
+[monitoring]
+check_interval_minutes = 30
+
+[account_usage]
+check_interval_minutes = 30
+max_age_minutes = 120
+warning_percent = 80.0
+critical_percent = 95.0
+
+[[account_usage.allowances]]
+resource_id = "example-actions-linux-rule"
+billing_owner = "example-user"
+billing_owner_kind = "user"
+product = "Actions"
+sku = "actions_linux"
+unit_type = "minutes"
+quantity = 1234.0
+quantity_basis = "gross"
+label = "user-provided local rule; not provider-reported entitlement"
+```
+
+`monitor account once` evaluates only allowances whose explicit billing owner matches the requested billing owner. JSON output includes the resulting quota evaluations; table output labels the provenance as `user_configured`. The explicit CLI query never writes quota-delivery receipts and never emits automatic desktop notifications.
+
+Durable delivery-deduplication receipts now live separately under `account-usage-alerts/v1/`, keyed by billing owner + resource + billing period + threshold. They are intended only for a future running daemon to record **after successful notification delivery**. Corrupt dedup history fails closed for an otherwise unseen key rather than risking a duplicate alert. Daemon notification delivery and GUI wiring are still pending.
