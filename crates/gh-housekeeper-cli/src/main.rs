@@ -2271,9 +2271,7 @@ async fn run_purge_apply(
                 .iter()
                 .filter(|item| {
                     item.run.error.as_deref()
-                        == Some(
-                            "batch halted after provider rate limit; target was not attempted",
-                        )
+                        == Some("batch halted after provider rate limit; target was not attempted")
                 })
                 .count();
 
