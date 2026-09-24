@@ -4,6 +4,7 @@ mod execution;
 mod monitoring;
 mod revalidation;
 mod run;
+mod run_purge;
 
 pub use cache::{
     ActionsCache, CacheAggregationKey, CacheInventoryService, CacheInventorySnapshot,
@@ -34,6 +35,14 @@ pub use revalidation::{
 pub use run::{
     WorkflowRun, WorkflowRunInventoryService, WorkflowRunInventorySnapshot, WorkflowRunProvider,
     WorkflowRunPurgeProvider,
+};
+pub use run_purge::{
+    RUN_PURGE_PLAN_SCHEMA_VERSION, RunPurgeArtifactResult, RunPurgeError,
+    RunPurgeExecutionItem, RunPurgeExecutionReport, RunPurgeExecutionService,
+    RunPurgeExecutionState, RunPurgePlan, RunPurgePlanSummary, RunPurgePlanningService,
+    RunPurgeRevalidationItem, RunPurgeRevalidationReport, RunPurgeRevalidationService,
+    RunPurgeRevalidationState, RunPurgeSelection, RunPurgeSelectionMode, RunPurgeStepResult,
+    RunPurgeTarget,
 };
 
 use async_trait::async_trait;
