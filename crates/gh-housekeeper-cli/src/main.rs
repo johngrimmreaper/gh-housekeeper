@@ -7,7 +7,8 @@ use gh_housekeeper_core::{
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
-    StorageBucket, StoragePressureLevel, aggregate_caches, format_bytes, matches_glob,
+    StorageBucket, StoragePressureLevel, WorkflowRun, WorkflowRunInventoryService,
+    WorkflowRunProvider, aggregate_caches, format_bytes, matches_glob,
     monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
@@ -50,6 +51,8 @@ enum Command {
     Repos(ReposCommand),
     /// List Actions artifacts with generic filters and sorting.
     Artifacts(ArtifactsCommand),
+    /// List workflow runs with generic filters and sorting.
+    Runs(RunsCommand),
     /// List Actions caches with generic filters, sorting, and storage totals.
     Caches(CachesCommand),
     /// Classify resources against policy without planning or deleting anything.
@@ -162,6 +165,51 @@ struct ArtifactsCommand {
         help = "Only artifacts at least this old, for example 30d or 12h"
     )]
     older_than: Option<String>,
+}
+
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum RunSort {
+    Age,
+    Workflow,
+    Branch,
+    Repository,
+}
+
+#[derive(Args)]
+struct RunsCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    #[arg(long, value_enum, default_value_t = RunSort::Age)]
+    sort: RunSort,
+
+    #[arg(long, help = "Workflow name glob, for example 'Rust *'")]
+    workflow: Option<String>,
+
+    #[arg(long, help = "Branch glob, for example 'work/*'")]
+    branch: Option<String>,
+
+    #[arg(long, help = "Only runs triggered by this event, for example push")]
+    event: Option<String>,
+
+    #[arg(long, help = "Only runs with this status, for example completed")]
+    status: Option<String>,
+
+    #[arg(long, help = "Only runs with this conclusion, for example failure")]
+    conclusion: Option<String>,
+
+    #[arg(
+        long,
+        help = "Only runs at least this old, for example 30d or 12h"
+    )]
+    older_than: Option<String>,
+
+    #[arg(long, help = "Only include completed workflow runs")]
+    completed_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -455,6 +503,7 @@ async fn main() -> Result<()> {
         Command::Scan(command) => run_scan(provider()?, command).await,
         Command::Repos(command) => run_repos(provider()?, command).await,
         Command::Artifacts(command) => run_artifacts(provider()?, command).await,
+        Command::Runs(command) => run_runs(provider()?, command).await,
         Command::Caches(command) => run_caches(provider()?, command).await,
         Command::Classify(command) => match command.resource {
             ClassifyResource::Caches(command) => run_classify_caches(provider()?, command).await,
@@ -1210,6 +1259,162 @@ async fn run_artifacts(
             print_scan_issues(&snapshot.issues);
         }
     }
+    Ok(())
+}
+
+
+async fn run_runs(provider: Arc<dyn WorkflowRunProvider>, command: RunsCommand) -> Result<()> {
+    let snapshot = WorkflowRunInventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+    let now = Utc::now();
+    let older_than = command
+        .older_than
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --older-than duration")?;
+
+    if let Some(pattern) = command.workflow.as_deref() {
+        matches_glob(pattern, "")
+            .with_context(|| format!("invalid workflow name glob: {pattern}"))?;
+    }
+    if let Some(pattern) = command.branch.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid branch glob: {pattern}"))?;
+    }
+
+    let mut runs: Vec<&WorkflowRun> = snapshot
+        .runs
+        .iter()
+        .filter(|run| {
+            command
+                .workflow
+                .as_deref()
+                .map(|pattern| {
+                    run.workflow_name
+                        .as_deref()
+                        .map(|name| matches_glob(pattern, name).unwrap_or(false))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            command
+                .branch
+                .as_deref()
+                .map(|pattern| {
+                    run.head_branch
+                        .as_deref()
+                        .map(|branch| matches_glob(pattern, branch).unwrap_or(false))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            command
+                .event
+                .as_deref()
+                .map(|event| run.event.eq_ignore_ascii_case(event))
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            command
+                .status
+                .as_deref()
+                .map(|status| run.status.eq_ignore_ascii_case(status))
+                .unwrap_or(true)
+        })
+        .filter(|run| {
+            command
+                .conclusion
+                .as_deref()
+                .map(|conclusion| {
+                    run.conclusion
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case(conclusion))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(true)
+        })
+        .filter(|run| !command.completed_only || run.is_completed())
+        .filter(|run| {
+            older_than
+                .map(|duration| run.older_than(now, duration))
+                .unwrap_or(true)
+        })
+        .collect();
+
+    match command.sort {
+        RunSort::Age => runs.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+        RunSort::Workflow => runs.sort_by(|a, b| {
+            a.workflow_name
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.workflow_name.as_deref().unwrap_or(""))
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        }),
+        RunSort::Branch => runs.sort_by(|a, b| {
+            a.head_branch
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.head_branch.as_deref().unwrap_or(""))
+                .then_with(|| a.repository.full_name.cmp(&b.repository.full_name))
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        }),
+        RunSort::Repository => runs.sort_by(|a, b| {
+            a.repository
+                .full_name
+                .cmp(&b.repository.full_name)
+                .then_with(|| b.created_at.cmp(&a.created_at))
+                .then_with(|| a.id.cmp(&b.id))
+        }),
+    }
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "account": snapshot.account,
+                    "scope": snapshot.scope,
+                    "scanned_at": snapshot.scanned_at,
+                    "run_count": runs.len(),
+                    "runs": runs,
+                    "issues": snapshot.issues,
+                    "telemetry": snapshot.telemetry,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!("Workflow runs: {}", runs.len());
+            println!();
+            println!(
+                "{:<14} {:<40} {:<28} {:>7} {:<16} {:<14} {:>8} BRANCH",
+                "ID", "REPOSITORY", "WORKFLOW", "RUN", "STATUS", "CONCLUSION", "AGE"
+            );
+            for run in runs {
+                println!(
+                    "{:<14} {:<40} {:<28} {:>7} {:<16} {:<14} {:>8} {}",
+                    run.id,
+                    run.repository.full_name,
+                    run.workflow_name.as_deref().unwrap_or("<unknown>"),
+                    format!("#{}.{}", run.run_number, run.run_attempt),
+                    run.status,
+                    run.conclusion.as_deref().unwrap_or("-"),
+                    format_age(run.age_seconds(now)),
+                    run.head_branch.as_deref().unwrap_or("<unknown>")
+                );
+            }
+            print_scan_issues(&snapshot.issues);
+        }
+    }
+
     Ok(())
 }
 
