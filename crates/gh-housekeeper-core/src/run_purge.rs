@@ -819,6 +819,7 @@ impl RunPurgeExecutionService {
 
         let mut residual_artifacts = Vec::new();
         let mut dependency_verification_error = None;
+        let mut dependency_verification_failed = false;
         if dependencies_clean {
             match self
                 .provider
@@ -845,6 +846,7 @@ impl RunPurgeExecutionService {
                 }
                 Err(error) => {
                     dependencies_clean = false;
+                    dependency_verification_failed = true;
                     dependency_verification_error = Some(error.to_string());
                 }
             }
@@ -868,7 +870,7 @@ impl RunPurgeExecutionService {
                 "workflow run retained because dependency cleanup was incomplete".to_owned()
             };
             step(
-                if residual_artifacts.is_empty() && error.contains("verification failed") {
+                if dependency_verification_failed {
                     RunPurgeExecutionState::VerificationFailed
                 } else {
                     RunPurgeExecutionState::Blocked
