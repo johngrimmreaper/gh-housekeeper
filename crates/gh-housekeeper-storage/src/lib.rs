@@ -15,7 +15,8 @@ pub use monitoring_history::{
 };
 pub use run_purge_audit::{
     RUN_PURGE_AUDIT_SCHEMA_VERSION, RunPurgeAuditError, RunPurgeAuditHistory,
-    RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore,
+    RunPurgeAuditIntent, RunPurgeAuditIntentReceipt, RunPurgeAuditReadIssue,
+    RunPurgeAuditRecord, RunPurgeAuditStore,
 };
 
 use std::{env, path::PathBuf};
