@@ -137,6 +137,21 @@ gh-housekeeper apply plan.json --yes
 # Machine-readable final execution output; pre-execution review remains on stderr.
 gh-housekeeper apply plan.json --yes --format json
 
+# Build an immutable Actions-cache purge plan. This does not delete anything.
+gh-housekeeper purge plan caches \
+  --all-repositories \
+  --all-caches \
+  --output cache-purge-plan.json
+
+# Revalidate exact cache IDs; still read-only.
+gh-housekeeper purge revalidate cache-purge-plan.json
+
+# Destructive only after review. Confirmation is bound to cache/repository counts.
+gh-housekeeper purge apply cache-purge-plan.json
+
+# Read cache-purge audit history locally.
+gh-housekeeper purge history --resource caches
+
 # Read local durable execution history. This does not contact GitHub.
 gh-housekeeper history
 
@@ -209,7 +224,7 @@ The project will never intentionally delete items while enumerating a shifting p
 
 `apply` is destructive. It reparses the immutable artifact plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
 
-`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs and revalidates the exact run and artifact dependency set before consent. A one-repository plan requires lowercase `purge`; a multi-repository plan binds interactive confirmation to the reviewed repository count (for example `purge 47 repositories`); explicit `--yes` remains the deliberate non-interactive automation path. It then persists an authorized write-ahead purge intent before the first DELETE. It deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate final purge audit before reporting successful completion. GitHub mutations are paced conservatively at two-second intervals. Planning, revalidation, and execution all preserve 250 requests of reported primary API headroom: planning aborts before expensive dependency snapshots when the guard is reached, revalidation stops checking new targets, and execution stops starting new targets. An actual provider rate-limit response also halts later revalidation/execution work immediately. DELETE requests are never blindly retried. If no matching final record is available, `purge history` leaves the intent visibly pending rather than implying that nothing happened.
+`purge apply` supports both workflow-run purge plans and Actions-cache purge plans. Workflow-run purge preserves the ordered logs → run-owned artifacts → run deletion sequence described above. Cache purge operates only on exact GitHub Actions cache IDs and uses the provider endpoint `/repos/{owner}/{repo}/actions/caches/{cache_id}`; release assets, release tarballs, packages, and ordinary workflow artifacts are different resource types and are not reachable through this cache-deletion capability. Both purge types use immutable plans, remote revalidation, write-ahead authorized intent, post-delete verification, durable final audit, two-second mutation pacing, a 250-request API headroom guard, and no blind retry of DELETE. If no matching final record is available, purge history leaves the intent visibly pending rather than implying that nothing happened.
 
 See:
 
