@@ -1112,8 +1112,8 @@ pub enum RunPurgeError {
 mod tests {
     use super::*;
     use crate::{
-        ProviderTelemetry, Repository, RepositoryProvider, RepositoryRef, ScanIssue, Visibility,
-        WorkflowRunRef,
+        ProviderResult, ProviderTelemetry, Repository, RepositoryProvider, RepositoryRef,
+        ScanIssue, Visibility, WorkflowRunRef,
     };
     use async_trait::async_trait;
     use chrono::TimeZone;
