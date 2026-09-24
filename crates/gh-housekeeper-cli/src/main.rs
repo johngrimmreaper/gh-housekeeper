@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    ActionsCache, Artifact, ArtifactProvider, CacheAggregationKey, CacheInventoryService,
+    AccountUsageAvailability, AccountUsageProvider, ActionsCache, Artifact, ArtifactProvider,
+    BillingOwner, BillingOwnerKind, BillingPeriod, CacheAggregationKey, CacheInventoryService,
     CacheProvider, CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
     CachePurgePlanningService, CachePurgeProvider, CachePurgeRevalidationService,
     CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
@@ -19,7 +20,8 @@ use gh_housekeeper_core::{
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
-    AppConfig, AuditReadIssue, AuditRecord, AuditStore, CachePurgeAuditReadIssue,
+    AccountUsageHistoryStore, AccountUsageReadIssue, AppConfig, AuditReadIssue, AuditRecord,
+    AuditStore, CachePurgeAuditReadIssue,
     CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore, MonitoringConfig,
     MonitoringHistoryStore, MonitoringReadIssue, RunProtectionStore, RunPurgeAuditReadIssue,
     RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
@@ -756,12 +758,107 @@ struct MonitorCommand {
 
 #[derive(Subcommand)]
 enum MonitorAction {
+    /// Query or inspect read-only account billing usage.
+    Account(MonitorAccountCommand),
     /// Run exactly one read-only monitoring iteration and persist its sample.
     Once(MonitorOnceCommand),
     /// Run foreground monitoring iterations until Ctrl-C or an optional attempt limit.
     Watch(MonitorWatchCommand),
     /// Read local monitoring samples without contacting GitHub.
     History(MonitorHistoryCommand),
+}
+
+
+#[derive(Args)]
+struct MonitorAccountCommand {
+    #[command(subcommand)]
+    action: MonitorAccountAction,
+}
+
+#[derive(Subcommand)]
+enum MonitorAccountAction {
+    /// Query one billing month explicitly and persist the observation.
+    Once(MonitorAccountOnceCommand),
+    /// Read one account/month series from local history without contacting GitHub.
+    History(MonitorAccountHistoryCommand),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BillingOwnerKindArg {
+    User,
+    Organization,
+}
+
+impl From<BillingOwnerKindArg> for BillingOwnerKind {
+    fn from(value: BillingOwnerKindArg) -> Self {
+        match value {
+            BillingOwnerKindArg::User => BillingOwnerKind::User,
+            BillingOwnerKindArg::Organization => BillingOwnerKind::Organization,
+        }
+    }
+}
+
+#[derive(Args, Clone)]
+struct BillingOwnerArgs {
+    #[arg(
+        long = "billing-owner",
+        value_name = "LOGIN",
+        help = "GitHub user or organization responsible for billing; never inferred from repository scope"
+    )]
+    login: String,
+
+    #[arg(
+        long = "billing-owner-kind",
+        value_enum,
+        default_value_t = BillingOwnerKindArg::User,
+        help = "Whether the billing owner is a personal user or organization"
+    )]
+    kind: BillingOwnerKindArg,
+
+    #[arg(long, value_name = "YEAR", help = "Billing period year")]
+    year: i32,
+
+    #[arg(long, value_name = "MONTH", help = "Billing period month (1-12)")]
+    month: u8,
+}
+
+impl BillingOwnerArgs {
+    fn owner(&self) -> BillingOwner {
+        BillingOwner {
+            provider: "github".to_owned(),
+            kind: self.kind.into(),
+            login: self.login.clone(),
+        }
+    }
+
+    fn period(&self) -> Result<BillingPeriod> {
+        BillingPeriod::monthly(self.year, self.month).context("invalid billing period")
+    }
+}
+
+#[derive(Args)]
+struct MonitorAccountOnceCommand {
+    #[command(flatten)]
+    billing: BillingOwnerArgs,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct MonitorAccountHistoryCommand {
+    #[command(flatten)]
+    billing: BillingOwnerArgs,
+
+    #[arg(
+        long,
+        default_value_t = 20,
+        help = "Maximum newest samples to display; use 0 for all samples in this account/month series"
+    )]
+    limit: usize,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
 }
 
 #[derive(Args)]
@@ -857,6 +954,12 @@ async fn main() -> Result<()> {
         Command::Config(command) => run_config(command),
         Command::Status(command) => run_status(provider()?, command).await,
         Command::Monitor(command) => match command.action {
+            MonitorAction::Account(command) => match command.action {
+                MonitorAccountAction::Once(command) => {
+                    run_monitor_account_once(provider()?, command).await
+                }
+                MonitorAccountAction::History(command) => run_monitor_account_history(command),
+            },
             MonitorAction::Once(command) => run_monitor_once(provider()?, command).await,
             MonitorAction::Watch(command) => run_monitor_watch(provider()?, command).await,
             MonitorAction::History(command) => run_monitor_history(command),
@@ -1280,6 +1383,221 @@ fn notification_label(signal: MonitoringNotificationSignal) -> &'static str {
         MonitoringNotificationSignal::RecoveredToHealthy { .. } => "recovered_to_healthy",
         MonitoringNotificationSignal::MonitoringIncomplete { .. } => "monitoring_incomplete",
         MonitoringNotificationSignal::MonitoringFailure { .. } => "monitoring_failure",
+    }
+}
+
+
+async fn run_monitor_account_once(
+    provider: Arc<dyn AccountUsageProvider>,
+    command: MonitorAccountOnceCommand,
+) -> Result<()> {
+    let owner = command.billing.owner();
+    let period = command.billing.period()?;
+    let observation = provider.billing_usage_summary(&owner, period).await;
+
+    let paths = StatePaths::discover()
+        .context("failed to determine local gh-housekeeper state directory")?;
+    let store = AccountUsageHistoryStore::from_paths(&paths);
+    let sample_path = store
+        .append(&observation)
+        .context("failed to persist account usage observation")?;
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "state_directory": paths.state_dir,
+                    "account_usage_directory": store.directory(),
+                    "sample_path": sample_path,
+                    "observation": observation,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            print_account_usage_observation_table(&observation);
+            println!("Sample:               {}", sample_path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn run_monitor_account_history(command: MonitorAccountHistoryCommand) -> Result<()> {
+    let owner = command.billing.owner();
+    let period = command.billing.period()?;
+    let paths = StatePaths::discover()
+        .context("failed to determine local gh-housekeeper state directory")?;
+    let store = AccountUsageHistoryStore::from_paths(&paths);
+    let history = store
+        .read_series(&owner, period)
+        .context("failed to read local account usage history")?;
+
+    let mut samples = history.samples.iter().rev().collect::<Vec<_>>();
+    if command.limit > 0 {
+        samples.truncate(command.limit);
+    }
+
+    match command.format {
+        OutputFormat::Json => {
+            let issues = history
+                .issues
+                .iter()
+                .map(|issue| {
+                    json!({
+                        "path": issue.path,
+                        "message": issue.message,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "state_directory": paths.state_dir,
+                    "account_usage_directory": store.directory(),
+                    "billing_owner": owner,
+                    "billing_period": period,
+                    "limit": command.limit,
+                    "samples": samples,
+                    "issues": issues,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!(
+                "Billing owner:         {}:{}:{}",
+                owner.provider,
+                billing_owner_kind_label(owner.kind),
+                owner.login
+            );
+            println!("Billing period:        {:04}-{:02}", period.year, period.month);
+
+            if samples.is_empty() {
+                println!("No account usage samples found for this owner and billing period.");
+            } else {
+                println!();
+                println!(
+                    "{:<20} {:<20} {:<14} {:>7} {:<16}",
+                    "RECORDED", "OBSERVED", "STATE", "ITEMS", "SOURCE"
+                );
+                for sample in samples {
+                    let observation = &sample.observation;
+                    println!(
+                        "{:<20} {:<20} {:<14} {:>7} {:<16}",
+                        sample.recorded_at.format("%Y-%m-%d %H:%M:%SZ"),
+                        observation.observed_at.format("%Y-%m-%d %H:%M:%SZ"),
+                        account_usage_availability_label(&observation.availability),
+                        observation.items.len(),
+                        observation.source.provider
+                    );
+                }
+            }
+
+            print_account_usage_read_issues(&history.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn print_account_usage_observation_table(
+    observation: &gh_housekeeper_core::AccountUsageObservation,
+) {
+    println!(
+        "Billing owner:         {}:{}:{}",
+        observation.owner.provider,
+        billing_owner_kind_label(observation.owner.kind),
+        observation.owner.login
+    );
+    println!(
+        "Billing period:        {:04}-{:02}",
+        observation.period.year, observation.period.month
+    );
+    println!(
+        "Observed:              {}",
+        observation.observed_at.format("%Y-%m-%d %H:%M:%SZ")
+    );
+    println!("Source:                {}", observation.source.endpoint);
+    println!(
+        "API version:           {}",
+        observation
+            .source
+            .api_version
+            .as_deref()
+            .unwrap_or("<unspecified>")
+    );
+    println!(
+        "Source status:         {}{}",
+        account_usage_availability_label(&observation.availability),
+        if observation.source.public_preview {
+            " (public preview)"
+        } else {
+            ""
+        }
+    );
+
+    match &observation.availability {
+        AccountUsageAvailability::Available => {
+            if observation.items.is_empty() {
+                println!("Usage items:           none reported");
+                return;
+            }
+
+            println!();
+            println!(
+                "{:<18} {:<28} {:<14} {:>12} {:>12} {:>12}",
+                "PRODUCT", "SKU", "UNIT", "GROSS", "DISCOUNT", "NET"
+            );
+            for item in &observation.items {
+                println!(
+                    "{:<18} {:<28} {:<14} {:>12.4} {:>12.4} {:>12.4}",
+                    item.product,
+                    item.sku,
+                    item.unit_type,
+                    item.gross_quantity,
+                    item.discount_quantity,
+                    item.net_quantity
+                );
+            }
+            println!();
+            println!("Allowance:             unavailable (not inferred)");
+            println!("Remaining balance:     unavailable");
+        }
+        AccountUsageAvailability::Unsupported { reason } => {
+            println!("Reason:                {reason}");
+        }
+        AccountUsageAvailability::Unknown { reason, message } => {
+            println!("Reason:                {reason:?}");
+            println!("Detail:                {message}");
+        }
+    }
+}
+
+fn billing_owner_kind_label(kind: BillingOwnerKind) -> &'static str {
+    match kind {
+        BillingOwnerKind::User => "user",
+        BillingOwnerKind::Organization => "organization",
+    }
+}
+
+fn account_usage_availability_label(availability: &AccountUsageAvailability) -> &'static str {
+    match availability {
+        AccountUsageAvailability::Available => "available",
+        AccountUsageAvailability::Unsupported { .. } => "unsupported",
+        AccountUsageAvailability::Unknown { .. } => "unknown",
+    }
+}
+
+fn print_account_usage_read_issues(issues: &[AccountUsageReadIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+
+    eprintln!();
+    eprintln!("Account usage history read issues:");
+    for issue in issues {
+        eprintln!("  {}: {}", issue.path.display(), issue.message);
     }
 }
 
@@ -4466,6 +4784,82 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+
+    #[test]
+    fn account_usage_monitor_commands_require_explicit_billing_series() {
+        let once = Cli::try_parse_from([
+            "gh-housekeeper",
+            "monitor",
+            "account",
+            "once",
+            "--billing-owner",
+            "example-user",
+            "--year",
+            "2026",
+            "--month",
+            "9",
+        ])
+        .unwrap();
+        let Command::Monitor(MonitorCommand {
+            action:
+                MonitorAction::Account(MonitorAccountCommand {
+                    action: MonitorAccountAction::Once(once),
+                }),
+        }) = once.command
+        else {
+            panic!("expected monitor account once command");
+        };
+        assert_eq!(once.billing.login, "example-user");
+        assert_eq!(once.billing.year, 2026);
+        assert_eq!(once.billing.month, 9);
+
+        let history = Cli::try_parse_from([
+            "gh-housekeeper",
+            "monitor",
+            "account",
+            "history",
+            "--billing-owner",
+            "example-org",
+            "--billing-owner-kind",
+            "organization",
+            "--year",
+            "2026",
+            "--month",
+            "8",
+            "--limit",
+            "0",
+        ])
+        .unwrap();
+        let Command::Monitor(MonitorCommand {
+            action:
+                MonitorAction::Account(MonitorAccountCommand {
+                    action: MonitorAccountAction::History(history),
+                }),
+        }) = history.command
+        else {
+            panic!("expected monitor account history command");
+        };
+        assert!(matches!(
+            history.billing.kind,
+            BillingOwnerKindArg::Organization
+        ));
+        assert_eq!(history.limit, 0);
+
+        assert!(
+            Cli::try_parse_from([
+                "gh-housekeeper",
+                "monitor",
+                "account",
+                "once",
+                "--year",
+                "2026",
+                "--month",
+                "9",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
