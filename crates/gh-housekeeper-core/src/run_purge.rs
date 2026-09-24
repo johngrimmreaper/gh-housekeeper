@@ -1192,6 +1192,8 @@ mod tests {
         current_run: Mutex<Option<WorkflowRun>>,
         artifacts: Mutex<Vec<Artifact>>,
         calls: Mutex<Vec<String>>,
+        retain_artifacts_on_delete: bool,
+        retain_run_on_delete: bool,
     }
 
     #[async_trait]
@@ -1269,10 +1271,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("artifact:{artifact_id}"));
-            self.artifacts
-                .lock()
-                .unwrap()
-                .retain(|artifact| artifact.id != artifact_id);
+            if !self.retain_artifacts_on_delete {
+                self.artifacts
+                    .lock()
+                    .unwrap()
+                    .retain(|artifact| artifact.id != artifact_id);
+            }
             Ok(DeleteOutcome::Deleted)
         }
 
@@ -1291,7 +1295,9 @@ mod tests {
             run_id: u64,
         ) -> ProviderResult<DeleteOutcome> {
             self.calls.lock().unwrap().push(format!("run:{run_id}"));
-            *self.current_run.lock().unwrap() = None;
+            if !self.retain_run_on_delete {
+                *self.current_run.lock().unwrap() = None;
+            }
             Ok(DeleteOutcome::Deleted)
         }
     }
@@ -1303,6 +1309,8 @@ mod tests {
             current_run: Mutex::new(Some(planned_run.clone())),
             artifacts: Mutex::new(vec![artifact(2, 7), artifact(1, 7)]),
             calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: false,
         });
         let plan = RunPurgePlanningService::new(provider.clone())
             .build(
@@ -1335,6 +1343,8 @@ mod tests {
             current_run: Mutex::new(Some(planned_run.clone())),
             artifacts: Mutex::new(vec![artifact(1, 7)]),
             calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: false,
         });
         let plan = RunPurgePlanningService::new(provider.clone())
             .build(
@@ -1371,6 +1381,8 @@ mod tests {
             current_run: Mutex::new(Some(planned_run.clone())),
             artifacts: Mutex::new(vec![artifact(1, 7), artifact(2, 7)]),
             calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: false,
         });
         let plan = RunPurgePlanningService::new(provider.clone())
             .build(
@@ -1410,6 +1422,113 @@ mod tests {
                 "run:7".to_owned(),
             ]
         );
+    }
+
+
+    #[tokio::test]
+    async fn residual_artifact_after_delete_blocks_final_run_deletion() {
+        let planned_run = run(7);
+        let provider = Arc::new(FakeProvider {
+            current_run: Mutex::new(Some(planned_run.clone())),
+            artifacts: Mutex::new(vec![artifact(1, 7)]),
+            calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: true,
+            retain_run_on_delete: false,
+        });
+        let plan = RunPurgePlanningService::new(provider.clone())
+            .build(
+                &snapshot(vec![planned_run.clone()]),
+                vec![planned_run],
+                RunPurgeSelection {
+                    mode: RunPurgeSelectionMode::AllCompleted,
+                    requested_run_ids: Vec::new(),
+                    older_than_seconds: None,
+                    workflow: None,
+                    branch: None,
+                    event: None,
+                    conclusion: None,
+                },
+            )
+            .await
+            .unwrap();
+        let reviewed = RunPurgeRevalidationService::new(provider.clone())
+            .revalidate(&plan)
+            .await
+            .unwrap();
+
+        let report = RunPurgeExecutionService::new(provider.clone())
+            .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
+            .await
+            .unwrap();
+
+        assert!(!report.is_complete_success());
+        assert_eq!(
+            report.items[0].artifacts[0].state,
+            RunPurgeExecutionState::VerificationFailed
+        );
+        assert_eq!(report.items[0].residual_artifacts.len(), 1);
+        assert_eq!(report.items[0].residual_artifacts[0].id, 1);
+        assert_eq!(report.items[0].run.state, RunPurgeExecutionState::Blocked);
+        assert_eq!(
+            *provider.calls.lock().unwrap(),
+            vec!["logs:7".to_owned(), "artifact:1".to_owned()]
+        );
+        assert!(provider.current_run.lock().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn post_delete_run_verification_detects_run_that_still_exists() {
+        let planned_run = run(7);
+        let provider = Arc::new(FakeProvider {
+            current_run: Mutex::new(Some(planned_run.clone())),
+            artifacts: Mutex::new(Vec::new()),
+            calls: Mutex::new(Vec::new()),
+            retain_artifacts_on_delete: false,
+            retain_run_on_delete: true,
+        });
+        let plan = RunPurgePlanningService::new(provider.clone())
+            .build(
+                &snapshot(vec![planned_run.clone()]),
+                vec![planned_run],
+                RunPurgeSelection {
+                    mode: RunPurgeSelectionMode::AllCompleted,
+                    requested_run_ids: Vec::new(),
+                    older_than_seconds: None,
+                    workflow: None,
+                    branch: None,
+                    event: None,
+                    conclusion: None,
+                },
+            )
+            .await
+            .unwrap();
+        let reviewed = RunPurgeRevalidationService::new(provider.clone())
+            .revalidate(&plan)
+            .await
+            .unwrap();
+
+        let report = RunPurgeExecutionService::new(provider.clone())
+            .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
+            .await
+            .unwrap();
+
+        assert!(!report.is_complete_success());
+        assert_eq!(
+            report.items[0].run.state,
+            RunPurgeExecutionState::VerificationFailed
+        );
+        assert!(
+            report.items[0]
+                .run
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("still exists"))
+        );
+        assert_eq!(
+            *provider.calls.lock().unwrap(),
+            vec!["logs:7".to_owned(), "run:7".to_owned()]
+        );
+        assert!(provider.current_run.lock().unwrap().is_some());
     }
 
     #[test]
