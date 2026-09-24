@@ -165,6 +165,27 @@ Run/log counts remain independent metrics.
 
 This keeps alerts honest while still allowing policies such as “too many completed runs” independently of storage-byte pressure.
 
+## Account usage and free-allowance monitoring
+
+Account billing usage is a separate, read-only monitoring source. Workflow-run counts and repository artifact/cache inventory are not billing minutes or an authoritative account balance. Deleting completed runs, logs, or artifacts cannot restore Actions minutes already consumed; deleting stored data can only reduce current storage and future storage accrual, not usage already accrued in the billing period.
+
+The first account-usage adapter should request the billing owner's account-level usage from GitHub's documented billing endpoints, with the minimum required read permission (for personal accounts, the `Plan: read` user permission for supported billing-usage endpoints). The billing-usage summary endpoint is in public preview and may be unavailable for a given billing platform, token, or account. Expose unsupported, forbidden, and stale usage as **unknown**, with a reason and observation time; never fabricate a remaining allowance by summing repository workflow durations or relying on an assumed GitHub plan. Preserve the source, unit, billing period, billed owner, and whether a value is reported by GitHub or computed from a separately verified allowance. Different runner SKUs and storage accounting must not be silently combined into a single raw-minute or byte total.
+
+Persist account-level samples separately from the existing `monitoring/v1/` artifact samples, keyed by provider and billing owner and bounded by retention. Include the billing period and check time so month-boundary resets and delayed GitHub accounting do not appear as unexplained recoveries. Keep version 1 readable; introduce a new schema or store only when implementing the new sample type. The monitoring adapter must never receive DELETE authority or feed account-usage warnings into cleanup policy.
+
+The daemon owns polling and notification delivery when running in the foreground, as a user service (for example, `systemd --user`), or when started explicitly through the GUI. Configurable threshold crossings can create warning/critical signals for the user's allowance; suppress duplicates per owner, product, threshold, and billing period, and report unavailable or stale data as monitoring failures. The GUI can display current and historical measurements and daemon state. Direct CLI commands may explicitly display status or history, but running the CLI must not start background monitoring or emit unsolicited desktop notifications.
+
+Prioritize the free resources that can actually affect this account, when supported and owned by its billing identity:
+
+- GitHub Actions billable minutes for private repositories, measured per billing cycle;
+- combined Actions artifact and GitHub Packages storage usage, including accrued usage versus current storage;
+- Actions cache storage against its separate **per-repository** included allowance;
+- GitHub Packages data transfer and Git LFS storage/bandwidth where enabled;
+- GitHub Codespaces compute and storage for personal accounts where enabled;
+- GitHub REST API rate-limit headroom as an operational limit, not a billed allowance.
+
+Do not assume any service is enabled or chargeable. Fetch account plan and allowance from an authoritative supported source, or require an explicitly labeled user-configured allowance; otherwise show usage without a made-up percentage/remaining balance. GitHub's own included-usage emails and spend-blocking budgets remain useful account-level protections that the app should point users toward, not silently configure.
+
 ## Daemon status model
 
 A client should eventually be able to inspect at least:
@@ -180,6 +201,7 @@ A client should eventually be able to inspect at least:
 - next scheduled check;
 - current pressure/resource summary;
 - current API telemetry;
+- account-level usage, source/freshness, billing period, and quota status when available;
 - pending destructive intents;
 - last cleanup outcome;
 - whether automated cleanup is enabled.
@@ -191,7 +213,8 @@ Status should be serializable so CLI, GUI, D-Bus, and tests consume the same mod
 Configuration should distinguish:
 
 - monitoring cadence;
-- monitoring resource categories;
+- monitoring resource categories, including optional account billing usage;
+- account-usage polling cadence and quota-alert thresholds;
 - warning/critical thresholds;
 - policy file/location or embedded policy;
 - automatic-cleanup enabled/disabled;
@@ -246,7 +269,10 @@ Workflow-run `keep_latest` still groups by repository, workflow ID, and branch b
 
 ### Stage 4 — multi-resource monitoring
 
-- monitoring schema v2;
+- monitoring schema v2 for repository inventory and a separately versioned account-usage history;
+- read-only billing-usage adapter with explicit unsupported/unknown states;
+- account-level minutes, pooled storage, cache, and optional metered products;
+- period-aware, deduplicated allowance signals delivered only by a running daemon;
 - artifact + cache known byte categories;
 - workflow-run/log counts;
 - resource-specific thresholds where useful;
