@@ -1,7 +1,7 @@
 use crate::{
     Account, ActionsCache, CacheInventorySnapshot, CachePurgeProvider, DeleteOutcome,
     ExecutionAuthorization, ExecutionAuthorizationKind, ProviderError, ProviderTelemetry,
-    RepositoryRef, ScanScope,
+    ScanScope,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -683,7 +683,9 @@ pub enum CachePurgeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CacheProvider, ProviderResult, Repository, RepositoryProvider, Visibility};
+    use crate::{
+        CacheProvider, ProviderResult, Repository, RepositoryProvider, RepositoryRef, Visibility,
+    };
     use async_trait::async_trait;
     use chrono::TimeZone;
     use std::sync::{
