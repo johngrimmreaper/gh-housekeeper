@@ -431,7 +431,10 @@ mod tests {
         let reopened = RunProtectionStore {
             directory: store.directory.clone(),
         };
-        assert_eq!(reopened.load_strict().unwrap().entries(), std::slice::from_ref(&entry));
+        assert_eq!(
+            reopened.load_strict().unwrap().entries(),
+            std::slice::from_ref(&entry)
+        );
         assert!(store.unprotect(&entry.key).await.unwrap());
         assert!(!store.unprotect(&entry.key).await.unwrap());
         assert!(store.load_strict().unwrap().entries().is_empty());
