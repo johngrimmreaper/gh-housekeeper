@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
     Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, DeleteOutcome, ProviderError,
     ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
-    WorkflowRunRef,
+    WorkflowRun, WorkflowRunProvider, WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -399,6 +399,86 @@ impl CacheProvider for GithubClient {
     }
 }
 
+
+#[async_trait]
+impl WorkflowRunProvider for GithubClient {
+    async fn workflow_runs(&self, repository: &Repository) -> ProviderResult<Vec<WorkflowRun>> {
+        validate_full_name(&repository.full_name)?;
+        let repository_ref = RepositoryRef::from(repository);
+        let mut runs = Vec::new();
+        let mut page = 1usize;
+
+        loop {
+            let path = format!(
+                "/repos/{}/actions/runs?per_page={PER_PAGE}&page={page}",
+                repository.full_name
+            );
+            let response: GithubWorkflowRunPage = self.get_json(&path).await?;
+            let item_count = response.workflow_runs.len();
+            runs.extend(
+                response
+                    .workflow_runs
+                    .into_iter()
+                    .map(|run| run.into_domain(repository_ref.clone())),
+            );
+
+            if item_count == 0 || runs.len() as u64 >= response.total_count {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(runs)
+    }
+
+    async fn workflow_run(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<Option<WorkflowRun>> {
+        validate_full_name(&repository.full_name)?;
+        let path = format!(
+            "/repos/{}/actions/runs/{run_id}",
+            repository.full_name
+        );
+        self.get_optional_json::<GithubWorkflowRun>(&path)
+            .await
+            .map(|run| run.map(|run| run.into_domain(repository.clone())))
+    }
+
+    async fn workflow_run_artifacts(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<Vec<Artifact>> {
+        validate_full_name(&repository.full_name)?;
+        let mut artifacts = Vec::new();
+        let mut page = 1usize;
+
+        loop {
+            let path = format!(
+                "/repos/{}/actions/runs/{run_id}/artifacts?per_page={PER_PAGE}&page={page}",
+                repository.full_name
+            );
+            let response: GithubArtifactPage = self.get_json(&path).await?;
+            let item_count = response.artifacts.len();
+            artifacts.extend(
+                response
+                    .artifacts
+                    .into_iter()
+                    .map(|artifact| artifact.into_domain(repository.clone())),
+            );
+
+            if item_count == 0 || artifacts.len() as u64 >= response.total_count {
+                break;
+            }
+            page += 1;
+        }
+
+        Ok(artifacts)
+    }
+}
+
 fn validate_full_name(full_name: &str) -> ProviderResult<()> {
     match full_name.split_once('/') {
         Some((owner, repository)) if !owner.is_empty() && !repository.is_empty() => Ok(()),
@@ -488,6 +568,51 @@ impl From<GithubRepository> for Repository {
             default_branch: value.default_branch,
             archived: value.archived,
             fork: value.fork,
+        }
+    }
+}
+
+
+#[derive(Deserialize)]
+struct GithubWorkflowRunPage {
+    total_count: u64,
+    workflow_runs: Vec<GithubWorkflowRun>,
+}
+
+#[derive(Deserialize)]
+struct GithubWorkflowRun {
+    id: u64,
+    name: Option<String>,
+    display_title: String,
+    event: String,
+    status: String,
+    conclusion: Option<String>,
+    workflow_id: u64,
+    head_branch: Option<String>,
+    head_sha: String,
+    run_number: u64,
+    run_attempt: u64,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl GithubWorkflowRun {
+    fn into_domain(self, repository: RepositoryRef) -> WorkflowRun {
+        WorkflowRun {
+            id: self.id,
+            repository,
+            workflow_id: self.workflow_id,
+            workflow_name: self.name,
+            display_title: self.display_title,
+            event: self.event,
+            status: self.status,
+            conclusion: self.conclusion,
+            head_branch: self.head_branch,
+            head_sha: self.head_sha,
+            run_number: self.run_number,
+            run_attempt: self.run_attempt,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
         }
     }
 }
