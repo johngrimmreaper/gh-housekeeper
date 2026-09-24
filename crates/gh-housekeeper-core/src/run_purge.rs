@@ -1,6 +1,6 @@
 use crate::{
     Account, Artifact, DeleteOutcome, ExecutionAuthorization, ExecutionAuthorizationKind,
-    ProviderError, ProviderResult, ProviderTelemetry, ScanScope, WorkflowRun,
+    ProviderError, ProviderTelemetry, ScanScope, WorkflowRun,
     WorkflowRunInventorySnapshot, WorkflowRunProvider, WorkflowRunPurgeProvider,
 };
 use chrono::{DateTime, Utc};
