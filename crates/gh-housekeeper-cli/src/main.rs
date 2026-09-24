@@ -2270,8 +2270,14 @@ async fn run_purge_apply(
                 .items
                 .iter()
                 .filter(|item| {
-                    item.run.error.as_deref()
-                        == Some("batch halted after provider rate limit; target was not attempted")
+                    item.run
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| {
+                            error.starts_with(
+                                "batch halted by GitHub API rate-limit guard",
+                            )
+                        })
                 })
                 .count();
 
@@ -2296,7 +2302,7 @@ async fn run_purge_apply(
                 println!();
                 if rate_limit_halted_targets > 0 {
                     println!(
-                        "Provider rate limit halted the batch; {rate_limit_halted_targets} remaining target(s) were not attempted."
+                        "GitHub API rate-limit guard halted the batch; {rate_limit_halted_targets} target(s) were not attempted."
                     );
                 }
                 println!(
