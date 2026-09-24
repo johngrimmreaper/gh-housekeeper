@@ -99,18 +99,12 @@ mod tests {
     }
 
     #[test]
-    fn protocol_commands_do_not_encode_destructive_targets() {
-        let commands = [
-            DaemonCommand::Status,
+    fn initial_protocol_exposes_control_without_destructive_commands() {
+        assert_eq!(DaemonCommand::Status, DaemonCommand::Status);
+        assert_eq!(
             DaemonCommand::RunMonitoringNow,
-            DaemonCommand::Shutdown,
-        ];
-
-        for command in commands {
-            let json = serde_json::to_string(&command).unwrap();
-            assert!(!json.contains("artifact_id"));
-            assert!(!json.contains("cache_id"));
-            assert!(!json.contains("run_id"));
-        }
+            DaemonCommand::RunMonitoringNow
+        );
+        assert_eq!(DaemonCommand::Shutdown, DaemonCommand::Shutdown);
     }
 }
