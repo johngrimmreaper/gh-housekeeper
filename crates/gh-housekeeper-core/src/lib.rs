@@ -1,3 +1,4 @@
+mod account_usage;
 mod agent;
 mod cache;
 mod cache_purge;
@@ -9,6 +10,11 @@ mod run;
 mod run_protection;
 mod run_purge;
 
+pub use account_usage::{
+    AccountUsageAvailability, AccountUsageItem, AccountUsageObservation, AccountUsageProvider,
+    AccountUsageSource, AccountUsageUnknownReason, BillingOwner, BillingOwnerKind, BillingPeriod,
+    BillingPeriodError,
+};
 pub use agent::{
     DAEMON_PROTOCOL_SCHEMA_VERSION, DaemonCapabilities, DaemonCommand, DaemonEvent,
     DaemonRuntimeState, DaemonStatus,
