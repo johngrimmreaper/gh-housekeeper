@@ -165,7 +165,7 @@ impl PolicyConfig {
                         || rule.conclusion.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
-                            "artifact policy rule {} cannot use cache/run-only key, ref, keep_unused_days, event, or conclusion fields",
+                            "artifact policy rule {} cannot use cache-only key, ref, or keep_unused_days fields or workflow-run-only event or conclusion fields",
                             rule.id
                         )));
                     }
@@ -178,7 +178,7 @@ impl PolicyConfig {
                         || rule.conclusion.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
-                            "cache policy rule {} cannot use artifact/run-only workflow, artifact, branch, event, or conclusion fields",
+                            "cache policy rule {} cannot use artifact-only/run-only workflow, artifact, branch, event, or conclusion fields",
                             rule.id
                         )));
                     }
