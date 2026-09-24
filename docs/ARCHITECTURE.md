@@ -14,7 +14,7 @@ Provider-neutral domain types and shared application services:
 
 - account, repository, workflow-run reference, strong workflow-run, artifact, and Actions-cache models;
 - scan scope plus resource-specific inventory snapshots;
-- small provider capabilities: shared `RepositoryProvider`, mature `ArtifactProvider`, read-only `CacheProvider`, `WorkflowRunProvider`, and destructive `WorkflowRunPurgeProvider`;
+- small provider capabilities: shared `RepositoryProvider`, mature `ArtifactProvider`, `CacheProvider` plus exact-ID `CachePurgeProvider`, `WorkflowRunProvider`, and destructive `WorkflowRunPurgeProvider`;
 - a shared bounded repository/resource scan primitive used by artifact, cache, and workflow-run inventory;
 - resource-specific storage aggregation;
 - generic byte, duration, and glob helpers.
@@ -37,7 +37,7 @@ GitHub REST response structs are private to this crate.
 
 ### `gh-housekeeper-policy`
 
-Declarative, resource-aware policy parsing and explainable classification for artifacts and Actions caches. Legacy rules default to artifact semantics; cache rules use cache-specific key/ref and last-accessed retention fields. The first product default remains ordinary retention of 30 days. Resource semantics must come only from user configuration and metadata.
+Declarative, resource-aware policy parsing and explainable classification for artifacts, Actions caches, and workflow runs. Legacy rules default to artifact semantics; cache rules use cache-specific key/ref and last-accessed retention fields; workflow-run rules use repository/workflow/branch/event/conclusion selectors plus run-specific retention defaults. The first product default remains ordinary elapsed retention of 30 days. Resource semantics must come only from user configuration and verified provider metadata.
 
 ### `gh-housekeeper-storage`
 
@@ -103,7 +103,9 @@ Pressure changes are derived in core through `evaluate_pressure_transition`. Tra
 
 `MonitoringNotificationSignal` is a provider-neutral output derived from those transition evaluations and scheduler failures. It distinguishes no notification, entering warning/critical pressure, recovering to warning/healthy, incomplete monitoring, and monitoring failure. Scheduler events carry both the detailed transition and the notification signal so future CLI, tray, GUI, or OS notification adapters can share exactly the same classification.
 
-Cache inventory and cache policy classification are read-only at this checkpoint. The CLI exposes this as `classify caches`, which scans the complete selected cache scope and invokes the shared policy engine without constructing a cleanup plan or mutation capability. Cache cleanup targets, exact revalidation, mutation, and audit must reuse the same safety shape before any cache DELETE is exposed. Workflow runs and run logs require distinct operations because deleting a run can also remove associated artifacts, while deleting logs may preserve the historical run.
+Cache policy classification remains independently read-only through `classify caches`, while destructive cache purge is now implemented through a separate exact-ID capability and immutable cache-purge plan. Cache purge performs exact revalidation, explicit authorization, write-ahead intent persistence, paced mutation, post-delete absence verification, and separate durable audit. Its provider mutation surface cannot address Releases, packages, or ordinary workflow artifacts.
+
+Workflow-run policy classification is also implemented. `classify runs` evaluates the complete workflow-run snapshot; active runs are always retained. `purge plan runs --policy PATH` selects exact completed runs classified `Delete` and feeds them into the existing dependency-aware `RunPurgePlan` path. No policy-specific delete executor exists.
 
 Before multi-resource destructive planning, dependency resolution must sit between classification and plan construction so a planned workflow-run deletion cannot double-count or redundantly delete artifacts already removed by that run. Storage estimates must keep artifact bytes and cache bytes separate; run/log counts must not be invented as byte usage when GitHub does not expose reliable bytes.
 
@@ -155,13 +157,15 @@ Run purge audit is intentionally separate from artifact audit. Before any remote
 
 `RunPurgeExecutionReport` preserves the account, plan schema and timestamps, scope, selection, authorization, telemetry, complete planned run metadata, complete planned artifact snapshots, log result, artifact results, residual artifacts, and final run result. This keeps the local history useful after the remote run and logs no longer exist.
 
-This explicit purge path is not workflow-run policy classification. Run `keep_days` and `keep_latest` semantics remain a later policy-engine slice and must feed exact selected runs into the same immutable purge machinery rather than creating a second destructive implementation.
+The same purge path now accepts policy-selected runs. Workflow-run `keep_days`, `protect`, and `keep_latest` classification live in the shared policy engine; `keep_latest` is evaluated per repository/workflow/branch family. Only completed `Delete` decisions are converted to exact purge targets, and the policy fingerprint is recorded in the purge selection metadata.
 
 ## Multi-resource direction
 
-Workflow-run inventory and explicit dependency-aware purge are now implemented. The next backend milestones are strongly typed cache planning/revalidation/deletion and, separately, workflow-run policy classification that can select exact completed runs for the existing purge pipeline. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
+Artifact cleanup, exact-ID cache purge, workflow-run inventory, policy classification, and dependency-aware workflow-run purge are now implemented. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, dependency resolution, scheduling, and notification signals.
 
-Monitoring is still artifact-only in the current schema. Once cache housekeeping is structurally integrated, monitoring can evolve to expose artifact count/bytes and cache count/bytes as separate categories plus a clearly-defined observable-storage total. Run/log metrics remain separate unless a trustworthy byte measurement is available.
+Monitoring is still artifact-only in the current persisted report schema. The daemon/agent preparation therefore treats multi-resource observability as a schema evolution rather than pretending that workflow-run/log bytes are known. The next monitoring model should expose artifact bytes and cache bytes as separate trustworthy byte categories, workflow-run/log counts as separate non-byte metrics, and a clearly-defined `known_storage_bytes` total containing only provider-observable byte measurements.
+
+The planned headless runtime is documented in `DAEMON.md`. The daemon will own scheduling/lifecycle, not business rules: CLI, GUI, daemon, system service, and automation must all call the same core policy/planning/revalidation/execution services.
 
 ## Future provider support
 
