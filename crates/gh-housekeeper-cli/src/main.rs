@@ -294,6 +294,8 @@ struct ClassifyCommand {
 enum ClassifyResource {
     /// Classify Actions caches using the complete cache inventory snapshot.
     Caches(ClassifyCachesCommand),
+    /// Classify workflow runs using the complete workflow-run inventory snapshot.
+    Runs(ClassifyRunsCommand),
 }
 
 #[derive(Args)]
@@ -314,6 +316,28 @@ struct ClassifyCachesCommand {
     #[arg(
         long,
         help = "Show every structured reason attached to each cache decision"
+    )]
+    explain: bool,
+}
+
+#[derive(Args)]
+struct ClassifyRunsCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "TOML policy file; defaults to the built-in workflow-run retention policy"
+    )]
+    policy: Option<PathBuf>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+
+    #[arg(
+        long,
+        help = "Show every structured reason attached to each workflow-run decision"
     )]
     explain: bool,
 }
@@ -435,17 +459,25 @@ struct PurgeRunsPlanCommand {
     #[arg(
         long = "run-id",
         value_name = "ID",
-        conflicts_with = "all_completed",
+        conflicts_with_all = ["all_completed", "policy"],
         help = "Exact completed workflow-run ID to purge; may be repeated"
     )]
     run_ids: Vec<u64>,
 
     #[arg(
         long,
-        conflicts_with = "run_ids",
+        conflicts_with_all = ["run_ids", "policy"],
         help = "Explicitly select all completed runs in scope, optionally narrowed by filters"
     )]
     all_completed: bool,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = ["run_ids", "all_completed"],
+        help = "Select completed workflow runs classified Delete by this TOML policy"
+    )]
+    policy: Option<PathBuf>,
 
     #[arg(
         long,
@@ -735,6 +767,7 @@ async fn main() -> Result<()> {
         Command::Caches(command) => run_caches(provider()?, command).await,
         Command::Classify(command) => match command.resource {
             ClassifyResource::Caches(command) => run_classify_caches(provider()?, command).await,
+            ClassifyResource::Runs(command) => run_classify_runs(provider()?, command).await,
         },
         Command::Stats(command) => run_stats(provider()?, command).await,
         Command::Plan(command) => run_plan(provider()?, command).await,
