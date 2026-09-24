@@ -186,6 +186,17 @@ Prioritize the free resources that can actually affect this account, when suppor
 
 Do not assume any service is enabled or chargeable. Fetch account plan and allowance from an authoritative supported source, or require an explicitly labeled user-configured allowance; otherwise show usage without a made-up percentage/remaining balance. GitHub's own included-usage emails and spend-blocking budgets remain useful account-level protections that the app should point users toward, not silently configure.
 
+## Current account-usage implementation checkpoint
+
+The read-only account-usage foundation now exists below the daemon layer:
+
+- core types preserve billing owner, monthly period, observation time, source, availability, and individual product/SKU/unit usage values;
+- the GitHub adapter queries the documented personal or organization billing usage summary endpoint and converts permission/rate-limit/transport/response failures into explicit unknown observations;
+- `AccountUsageHistoryStore` persists these observations under `account-usage/v1/`, independently of `monitoring/v1/`;
+- fixture tests cover personal and organization endpoint selection, distinct units/SKUs, permission denial, period/account separation, persistence, corrupt records, and credential-field absence.
+
+This checkpoint is **not** daemon delivery yet. There is no account-usage CLI surface, allowance percentage calculation, threshold evaluator, deduplication state, polling loop, desktop notification, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
+
 ## Daemon status model
 
 A client should eventually be able to inspect at least:

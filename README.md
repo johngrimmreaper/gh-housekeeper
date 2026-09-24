@@ -300,3 +300,14 @@ The shared transition evaluator compares only compatible monitoring series. Prov
 Core also derives provider-neutral notification signals from monitoring events: `no_notification`, `entered_warning`, `entered_critical`, `recovered_to_warning`, `recovered_to_healthy`, `monitoring_incomplete`, and `monitoring_failure`. These are domain signals only; no OS desktop-notification backend or tray integration is implied yet. JSON watch output includes the structured signal, and table output includes its stable label.
 
 The next presentation/runtime layer is a small headless daemon/agent that owns scheduling while CLI and GUI remain first-class clients of the same Rust core. The intended lifecycle, IPC boundary, notification adapters, service/autostart modes, and safety requirements are documented in `docs/DAEMON.md`. The GUI must not shell out to the CLI, and the daemon must not bypass immutable plan/revalidation/audit for automated deletion.
+
+
+## Account billing usage foundation
+
+The shared Rust layers now contain the first read-only foundation for account-level GitHub billing usage. This is deliberately separate from repository artifact monitoring and from every destructive planner/executor.
+
+The core models a billing owner (user or organization), monthly billing period, observation time, source endpoint/API version, availability state, and individual product/SKU/unit usage items. GitHub's billing usage summary adapter queries the billing owner's documented account-level endpoint and preserves each returned SKU and unit independently. Permission failures, unsupported access paths, rate limits, transport failures, and malformed responses remain unavailable/unknown observations rather than being converted to zero usage.
+
+Account-usage samples are persisted separately under `account-usage/v1/`; existing `monitoring/v1/` artifact history remains unchanged and readable. The account-usage history is observational only and stores no token or Authorization value.
+
+This foundation does **not** yet expose a CLI command, calculate remaining included allowance, infer a GitHub plan, combine different runner SKUs, evaluate percentage thresholds, deduplicate quota notifications, or run a daemon. Remaining allowance will only be calculated after an allowance comes from a supported authoritative source or an explicitly labeled user configuration.

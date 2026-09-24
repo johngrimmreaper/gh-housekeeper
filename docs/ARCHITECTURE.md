@@ -172,3 +172,14 @@ The planned headless runtime is documented in `DAEMON.md`. The daemon will own s
 ## Future provider support
 
 The core abstraction is intentionally small enough to support a future GitLab, Forgejo, or Gitea provider, but version 0.1 implements GitHub only. Abstractions should grow from concrete needs rather than speculative provider features.
+
+
+## Account billing usage boundary
+
+Account billing usage is modeled as a separate observational capability rather than extending artifact `MonitoringReport` in place. `AccountUsageProvider` accepts an explicit `BillingOwner` and `BillingPeriod` and returns an `AccountUsageObservation`. This prevents repository accessibility from being mistaken for billing ownership.
+
+The GitHub provider implements the capability with the account-level billing usage summary endpoints. Returned usage remains itemized by product, SKU, and unit; the provider does not aggregate unlike units or distinct SKUs. Provider/authentication failures are represented as unavailable observations with a reason instead of fabricated numeric usage.
+
+Storage uses a separately versioned `AccountUsageHistoryStore` rooted at `account-usage/v1/`. The existing `monitoring/v1/` schema is unchanged. History filtering keys on provider, billing-owner kind/login, and billing period, so month boundaries and distinct accounts do not form one accidental series.
+
+No allowance or quota is currently authoritative in this model. A later evaluator may derive remaining allowance and warning/critical state only when paired with an allowance whose provenance is explicit (provider-reported or user-configured). The billing usage capability has no cleanup planning, authorization, revalidation, or DELETE dependency.

@@ -174,3 +174,14 @@ Before consent, every planned cache is exact-looked-up and compared with its imm
 Interactive confirmation is bound to the reviewed blast radius using a phrase such as `purge 9 caches from 5 repositories`. Cache purge uses the same conservative two-second mutation pacing and 250-request API headroom guard as workflow-run purge. DELETE requests are single-attempt and are never blindly retried.
 
 Cache purge intent and final records live separately under `cache-purge-audit/v1`. A pending intent means authorization was durably recorded but no linked final execution record exists; remote state must be inspected before retrying.
+
+
+## Account billing usage safety
+
+Billing observations are read-only and are intentionally isolated from cleanup authority. The billing owner is explicit and is not inferred from the repositories visible to an inventory scan. A failed or forbidden billing request is `unknown`, never zero.
+
+Usage values retain product, SKU, and unit boundaries. Different runner SKUs and storage units are not silently added together, and repository artifact/cache bytes are not relabeled as GitHub's billed account usage.
+
+The account-usage history is stored separately under `account-usage/v1/`; existing `monitoring/v1/` remains compatible. Persisted observations contain source/period/owner metadata but no tokens or Authorization headers. History is evidence for display and transition analysis only, never remote authority.
+
+No included allowance is assumed from the authenticated account or a repository plan. Percentage-used, remaining-balance, warning, or critical calculations must stay unavailable until an allowance has explicit trustworthy provenance. Quota pressure must never create `ExecutionAuthorization`, select deletion targets, bypass local protections, or invoke any existing DELETE executor.
