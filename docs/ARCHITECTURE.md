@@ -136,6 +136,7 @@ complete workflow-run inventory
     -> immutable RunPurgePlan
     -> remote revalidation
     -> explicit authorization
+    -> durable authorized intent journal
     -> delete run logs
     -> delete exact unchanged artifact IDs
     -> enumerate run artifacts again
@@ -150,7 +151,9 @@ complete workflow-run inventory
 
 After artifact deletion, the executor performs a second run-scoped artifact enumeration. Any residual artifact blocks run deletion and is preserved in the execution report. If GitHub reports successful run deletion, an exact lookup must confirm that the run disappeared; otherwise the final state is `VerificationFailed` rather than an assumed success.
 
-Run purge audit is intentionally separate from artifact audit. `RunPurgeExecutionReport` preserves the account, plan schema and timestamps, scope, selection, authorization, telemetry, complete planned run metadata, complete planned artifact snapshots, log result, artifact results, residual artifacts, and final run result. This keeps the local history useful after the remote run and logs no longer exist.
+Run purge audit is intentionally separate from artifact audit. Before any remote mutation, `RunPurgeAuditStore` writes an authorized intent containing the immutable plan, the reviewed revalidation report, and the authorization kind. Final execution records link back to that intent. If the process terminates or execution/audit completion fails after authorization, the unmatched intent remains visible as pending evidence that remote state may have changed and must be inspected before retrying.
+
+`RunPurgeExecutionReport` preserves the account, plan schema and timestamps, scope, selection, authorization, telemetry, complete planned run metadata, complete planned artifact snapshots, log result, artifact results, residual artifacts, and final run result. This keeps the local history useful after the remote run and logs no longer exist.
 
 This explicit purge path is not workflow-run policy classification. Run `keep_days` and `keep_latest` semantics remain a later policy-engine slice and must feed exact selected runs into the same immutable purge machinery rather than creating a second destructive implementation.
 
