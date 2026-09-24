@@ -80,7 +80,6 @@ pub trait WorkflowRunProvider: RepositoryProvider {
     ) -> ProviderResult<Vec<Artifact>>;
 }
 
-
 #[async_trait]
 pub trait WorkflowRunPurgeProvider: WorkflowRunProvider {
     /// Look up one exact artifact dependency of a workflow run.
@@ -143,10 +142,7 @@ impl WorkflowRunInventoryService {
         Self { provider }
     }
 
-    pub async fn scan(
-        &self,
-        options: ScanOptions,
-    ) -> ProviderResult<WorkflowRunInventorySnapshot> {
+    pub async fn scan(&self, options: ScanOptions) -> ProviderResult<WorkflowRunInventorySnapshot> {
         let scan = scan_resources(
             Arc::clone(&self.provider),
             options,
