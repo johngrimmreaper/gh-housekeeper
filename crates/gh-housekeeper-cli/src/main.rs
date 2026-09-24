@@ -1947,6 +1947,108 @@ async fn run_classify_caches(
     Ok(())
 }
 
+async fn run_classify_runs(
+    provider: Arc<dyn WorkflowRunProvider>,
+    command: ClassifyRunsCommand,
+) -> Result<()> {
+    let snapshot = WorkflowRunInventoryService::new(provider)
+        .scan(command.scope.scan_options())
+        .await?;
+
+    let (policy_label, config) = match command.policy.as_ref() {
+        Some(path) => {
+            let input = fs::read_to_string(path)
+                .with_context(|| format!("failed to read policy file {}", path.display()))?;
+            let config = PolicyConfig::from_toml(&input)
+                .with_context(|| format!("invalid policy file {}", path.display()))?;
+            (path.display().to_string(), config)
+        }
+        None => ("built-in default".to_owned(), PolicyConfig::default()),
+    };
+
+    let engine = PolicyEngine::new(config)?;
+    let policy_hash = engine.config().fingerprint();
+    let report = engine.classify_workflow_run_snapshot(&snapshot);
+
+    match command.format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "policy": policy_label,
+                    "policy_hash": policy_hash,
+                    "account": snapshot.account,
+                    "scope": snapshot.scope,
+                    "scanned_at": snapshot.scanned_at,
+                    "run_count": snapshot.run_count(),
+                    "completed_count": snapshot.completed_count(),
+                    "classification": report,
+                    "issues": snapshot.issues,
+                    "telemetry": snapshot.telemetry,
+                }))?
+            );
+        }
+        OutputFormat::Table => {
+            println!("Policy:              {policy_label}");
+            println!("Policy hash:         {policy_hash}");
+            println!("Runs scanned:        {}", snapshot.run_count());
+            println!("Completed runs:      {}", snapshot.completed_count());
+            println!("Keep:                {}", report.count(Decision::Keep));
+            println!("Protected:           {}", report.count(Decision::Protected));
+            println!(
+                "Manual review:       {}",
+                report.count(Decision::ManualReview)
+            );
+            println!("Delete candidate:    {}", report.count(Decision::Delete));
+
+            if report.decisions.is_empty() {
+                println!();
+                println!("No workflow runs were present in the selected scope.");
+            } else {
+                println!();
+                println!(
+                    "{:<14} {:<40} {:<28} {:<15} {:>9} BRANCH",
+                    "RUN ID", "REPOSITORY", "WORKFLOW", "DECISION", "AGE"
+                );
+                for item in &report.decisions {
+                    let run = snapshot
+                        .runs
+                        .iter()
+                        .find(|run| {
+                            run.id == item.run_id
+                                && run.repository.full_name == item.repository
+                        })
+                        .expect("classification decision must reference source run");
+                    println!(
+                        "{:<14} {:<40} {:<28} {:<15} {:>9} {}",
+                        item.run_id,
+                        item.repository,
+                        item.workflow_name.as_deref().unwrap_or("<unknown>"),
+                        decision_label(item.decision),
+                        format_age(run.age_seconds(snapshot.scanned_at)),
+                        item.branch.as_deref().unwrap_or("<unknown>")
+                    );
+
+                    if command.explain {
+                        for reason in &item.reasons {
+                            println!(
+                                "  -> {} [rule: {}]: {}",
+                                reason.code.as_str(),
+                                reason.rule_id.as_deref().unwrap_or("<default>"),
+                                reason.explanation
+                            );
+                        }
+                    }
+                }
+            }
+
+            print_scan_issues(&snapshot.issues);
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_stats(provider: Arc<dyn ArtifactProvider>, command: StatsCommand) -> Result<()> {
     let snapshot = InventoryService::new(provider)
         .scan(command.scope.scan_options())
@@ -1988,9 +2090,12 @@ async fn run_purge_plan_runs(
     provider: Arc<dyn WorkflowRunPurgeProvider>,
     command: PurgeRunsPlanCommand,
 ) -> Result<()> {
-    if command.run_ids.is_empty() == !command.all_completed {
+    let selection_mode_count = usize::from(!command.run_ids.is_empty())
+        + usize::from(command.all_completed)
+        + usize::from(command.policy.is_some());
+    if selection_mode_count != 1 {
         anyhow::bail!(
-            "choose exactly one workflow-run purge selection mode: repeat --run-id ID, or pass --all-completed"
+            "choose exactly one workflow-run purge selection mode: repeat --run-id ID, pass --all-completed, or pass --policy PATH"
         );
     }
 
@@ -2037,7 +2142,38 @@ async fn run_purge_plan_runs(
     }
 
     let now = Utc::now();
-    let (selected_runs, selection) = if command.all_completed {
+    let (selected_runs, selection) = if let Some(policy_path) = command.policy.as_ref() {
+        let input = fs::read_to_string(policy_path)
+            .with_context(|| format!("failed to read policy file {}", policy_path.display()))?;
+        let config = PolicyConfig::from_toml(&input)
+            .with_context(|| format!("invalid policy file {}", policy_path.display()))?;
+        let engine = PolicyEngine::new(config)?;
+        let policy_hash = engine.config().fingerprint();
+        let report = engine.classify_workflow_run_snapshot(&snapshot);
+        let delete_identities = report.delete_identities();
+        let selected = snapshot
+            .runs
+            .iter()
+            .filter(|run| {
+                delete_identities.contains(&(run.repository.full_name.clone(), run.id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        (
+            selected,
+            RunPurgeSelection {
+                mode: RunPurgeSelectionMode::Policy,
+                requested_run_ids: Vec::new(),
+                older_than_seconds: None,
+                workflow: None,
+                branch: None,
+                event: None,
+                conclusion: None,
+                policy_hash: Some(policy_hash),
+            },
+        )
+    } else if command.all_completed {
         let selected = snapshot
             .runs
             .iter()
@@ -2103,6 +2239,7 @@ async fn run_purge_plan_runs(
                 branch: command.branch.clone(),
                 event: command.event.clone(),
                 conclusion: command.conclusion.clone(),
+                policy_hash: None,
             },
         )
     } else {
@@ -2141,6 +2278,7 @@ async fn run_purge_plan_runs(
                 branch: None,
                 event: None,
                 conclusion: None,
+                policy_hash: None,
             },
         )
     };
@@ -2164,6 +2302,9 @@ async fn run_purge_plan_runs(
                 run_purge_repository_count(&plan)
             );
             println!("Artifacts:            {}", plan.summary().artifact_count());
+            if let Some(policy_hash) = &plan.selection().policy_hash {
+                println!("Policy hash:          {policy_hash}");
+            }
             println!(
                 "Artifact storage:      {}",
                 format_bytes(plan.summary().artifact_bytes())
@@ -2171,7 +2312,7 @@ async fn run_purge_plan_runs(
 
             if plan.targets().is_empty() {
                 println!();
-                println!("No completed workflow runs matched the explicit purge selection.");
+                println!("No completed workflow runs matched the purge selection.");
             } else {
                 println!();
                 println!(
