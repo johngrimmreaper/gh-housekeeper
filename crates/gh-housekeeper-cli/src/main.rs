@@ -3053,6 +3053,27 @@ mod tests {
         assert!(authorize_apply(false, true, Some("\n")).is_err());
     }
 
+
+    #[test]
+    fn purge_authorization_requires_exact_lowercase_confirmation() {
+        let automated = authorize_run_purge(true, false, None).unwrap();
+        assert_eq!(
+            automated.kind(),
+            gh_housekeeper_core::ExecutionAuthorizationKind::AutomationYes
+        );
+
+        let interactive = authorize_run_purge(false, true, Some("purge\n")).unwrap();
+        assert_eq!(
+            interactive.kind(),
+            gh_housekeeper_core::ExecutionAuthorizationKind::InteractiveConfirmation
+        );
+
+        assert!(authorize_run_purge(false, false, None).is_err());
+        assert!(authorize_run_purge(false, true, Some("delete\n")).is_err());
+        assert!(authorize_run_purge(false, true, Some("PURGE\n")).is_err());
+        assert!(authorize_run_purge(false, true, Some("\n")).is_err());
+    }
+
     #[test]
     fn history_repository_filter_is_case_insensitive() {
         let record = AuditRecord {
