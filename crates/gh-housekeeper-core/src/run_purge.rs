@@ -1,7 +1,7 @@
 use crate::{
     Account, Artifact, DeleteOutcome, ExecutionAuthorization, ExecutionAuthorizationKind,
-    ProviderError, ProviderTelemetry, ScanScope, WorkflowRun,
-    WorkflowRunInventorySnapshot, WorkflowRunProvider, WorkflowRunPurgeProvider,
+    ProviderError, ProviderTelemetry, ScanScope, WorkflowRun, WorkflowRunInventorySnapshot,
+    WorkflowRunProvider, WorkflowRunPurgeProvider,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
