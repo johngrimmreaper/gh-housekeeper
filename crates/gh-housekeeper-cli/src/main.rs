@@ -6,12 +6,12 @@ use gh_housekeeper_core::{
     CacheProvider, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
-    PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
-    RunPurgeExecutionService, RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService,
-    RunPurgeRevalidationService, RunPurgeSelection,
-    RunPurgeSelectionMode, StorageBucket, StoragePressureLevel, WorkflowRun,
-    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
-    format_bytes, matches_glob, monitoring_scheduler_cancellation, parse_duration,
+    PressureTransitionEvaluation, RevalidationService, RevalidationState, RunPurgeExecutionService,
+    RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService,
+    RunPurgeSelection, RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket,
+    StoragePressureLevel, WorkflowRun, WorkflowRunInventoryService, WorkflowRunProvider,
+    WorkflowRunPurgeProvider, aggregate_caches, format_bytes, matches_glob,
+    monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
@@ -172,7 +172,6 @@ struct ArtifactsCommand {
     older_than: Option<String>,
 }
 
-
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RunSort {
     Age,
@@ -207,10 +206,7 @@ struct RunsCommand {
     #[arg(long, help = "Only runs with this conclusion, for example failure")]
     conclusion: Option<String>,
 
-    #[arg(
-        long,
-        help = "Only runs at least this old, for example 30d or 12h"
-    )]
+    #[arg(long, help = "Only runs at least this old, for example 30d or 12h")]
     older_than: Option<String>,
 
     #[arg(long, help = "Only include completed workflow runs")]
@@ -388,7 +384,6 @@ struct ApplyCommand {
     format: OutputFormat,
 }
 
-
 #[derive(Args)]
 struct PurgeCommand {
     #[command(subcommand)]
@@ -487,7 +482,10 @@ struct PurgeRunsPlanCommand {
 
 #[derive(Args)]
 struct PurgeRevalidateCommand {
-    #[arg(value_name = "PLAN", help = "Path to an immutable workflow-run purge-plan JSON file")]
+    #[arg(
+        value_name = "PLAN",
+        help = "Path to an immutable workflow-run purge-plan JSON file"
+    )]
     plan: PathBuf,
 
     #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
@@ -1409,7 +1407,6 @@ async fn run_artifacts(
     Ok(())
 }
 
-
 async fn run_runs(provider: Arc<dyn WorkflowRunProvider>, command: RunsCommand) -> Result<()> {
     let snapshot = WorkflowRunInventoryService::new(provider)
         .scan(command.scope.scan_options())
@@ -1855,7 +1852,6 @@ async fn run_stats(provider: Arc<dyn ArtifactProvider>, command: StatsCommand) -
     Ok(())
 }
 
-
 async fn run_purge_plan_runs(
     provider: Arc<dyn WorkflowRunPurgeProvider>,
     command: PurgeRunsPlanCommand,
@@ -1886,9 +1882,7 @@ async fn run_purge_plan_runs(
 
     if !snapshot.issues.is_empty() {
         print_scan_issues(&snapshot.issues);
-        anyhow::bail!(
-            "refusing to plan workflow-run purge from an incomplete inventory snapshot"
-        );
+        anyhow::bail!("refusing to plan workflow-run purge from an incomplete inventory snapshot");
     }
 
     let now = Utc::now();
@@ -2031,10 +2025,9 @@ async fn run_purge_plan_runs(
                 );
                 for target in plan.targets() {
                     let run = target.run();
-                    let bytes = target
-                        .artifacts()
-                        .iter()
-                        .fold(0_u64, |total, artifact| total.saturating_add(artifact.size_in_bytes));
+                    let bytes = target.artifacts().iter().fold(0_u64, |total, artifact| {
+                        total.saturating_add(artifact.size_in_bytes)
+                    });
                     println!(
                         "{:<14} {:<40} {:<28} {:>7} {:>10} {:>14} {}",
                         run.id,
@@ -2070,7 +2063,11 @@ async fn run_purge_revalidate(
             println!("Targets checked:      {}", report.items.len());
             println!(
                 "Safe to apply:        {}",
-                if report.is_safe_to_apply() { "yes" } else { "no" }
+                if report.is_safe_to_apply() {
+                    "yes"
+                } else {
+                    "no"
+                }
             );
             if !report.items.is_empty() {
                 println!();
@@ -2110,9 +2107,7 @@ async fn run_purge_apply(
         .context("failed to revalidate workflow-run purge plan")?;
 
     if !reviewed.is_safe_to_apply() {
-        anyhow::bail!(
-            "workflow-run purge plan is not safe to apply; no deletion was attempted"
-        );
+        anyhow::bail!("workflow-run purge plan is not safe to apply; no deletion was attempted");
     }
 
     if plan.targets().is_empty() {
@@ -2231,7 +2226,9 @@ fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
     let records = history
         .records
         .iter()
-        .filter(|record| run_purge_history_matches_repository(record, command.repository.as_deref()))
+        .filter(|record| {
+            run_purge_history_matches_repository(record, command.repository.as_deref())
+        })
         .collect::<Vec<_>>();
 
     match command.format {
@@ -2286,7 +2283,9 @@ fn write_json_atomic_new(path: &std::path::Path, value: &RunPurgePlan) -> Result
         );
     }
 
-    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
     if let Some(parent) = parent {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create plan directory {}", parent.display()))?;
@@ -2444,7 +2443,6 @@ fn print_run_purge_audit_issues(issues: &[RunPurgeAuditReadIssue]) {
         println!("  {}: {}", issue.path.display(), issue.message);
     }
 }
-
 
 async fn run_plan(provider: Arc<dyn ArtifactProvider>, command: PlanCommand) -> Result<()> {
     let snapshot = InventoryService::new(provider)
@@ -3052,7 +3050,6 @@ mod tests {
         assert!(authorize_apply(false, true, Some("DELETE\n")).is_err());
         assert!(authorize_apply(false, true, Some("\n")).is_err());
     }
-
 
     #[test]
     fn purge_authorization_requires_exact_lowercase_confirmation() {
