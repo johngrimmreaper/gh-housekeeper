@@ -2015,8 +2015,7 @@ async fn run_classify_runs(
                         .runs
                         .iter()
                         .find(|run| {
-                            run.id == item.run_id
-                                && run.repository.full_name == item.repository
+                            run.id == item.run_id && run.repository.full_name == item.repository
                         })
                         .expect("classification decision must reference source run");
                     println!(
@@ -2154,9 +2153,7 @@ async fn run_purge_plan_runs(
         let selected = snapshot
             .runs
             .iter()
-            .filter(|run| {
-                delete_identities.contains(&(run.repository.full_name.clone(), run.id))
-            })
+            .filter(|run| delete_identities.contains(&(run.repository.full_name.clone(), run.id)))
             .cloned()
             .collect::<Vec<_>>();
 
