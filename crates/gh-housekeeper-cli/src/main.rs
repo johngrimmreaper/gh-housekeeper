@@ -3,7 +3,9 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     ActionsCache, Artifact, ArtifactProvider, CacheAggregationKey, CacheInventoryService,
-    CacheProvider, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
+    CacheProvider, CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
+    CachePurgePlanningService, CachePurgeProvider, CachePurgeRevalidationService,
+    CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, RunPurgeExecutionService,
@@ -16,7 +18,8 @@ use gh_housekeeper_core::{
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
-    AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig,
+    AppConfig, AuditReadIssue, AuditRecord, AuditStore, CachePurgeAuditReadIssue,
+    CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore, MonitoringConfig,
     MonitoringHistoryStore, MonitoringReadIssue, RunPurgeAuditReadIssue, RunPurgeAuditRecord,
     RunPurgeAuditStore, StatePaths,
 };
