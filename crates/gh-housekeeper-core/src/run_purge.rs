@@ -315,6 +315,14 @@ impl RunPurgePlanningService {
 
         let mut targets = Vec::with_capacity(selected_runs.len());
         for planned_run in selected_runs {
+            if let Some(remaining) = rate_limit_guard_remaining(self.provider.telemetry()) {
+                return Err(RunPurgeError::RateLimitHeadroomGuard {
+                    phase: "planning",
+                    remaining,
+                    reserved: RUN_PURGE_RATE_LIMIT_HEADROOM,
+                });
+            }
+
             if !planned_run.is_completed() {
                 return Err(RunPurgeError::RunNotCompleted {
                     repository: planned_run.repository.full_name.clone(),
@@ -433,8 +441,42 @@ impl RunPurgeRevalidationService {
         ensure_same_account(plan.account(), &account)?;
 
         let mut items = Vec::with_capacity(plan.targets().len());
+        let mut rate_limit_halt_reason: Option<String> = None;
         for target in plan.targets() {
             let planned = target.run();
+
+            if let Some(reason) = &rate_limit_halt_reason {
+                items.push(RunPurgeRevalidationItem {
+                    repository: planned.repository.full_name.clone(),
+                    run_id: planned.id,
+                    state: RunPurgeRevalidationState::RevalidationFailed,
+                    missing_artifact_ids: Vec::new(),
+                    changed_artifact_ids: Vec::new(),
+                    unexpected_artifact_ids: Vec::new(),
+                    current_run: None,
+                    error: Some(reason.clone()),
+                });
+                continue;
+            }
+
+            if let Some(remaining) = rate_limit_guard_remaining(self.provider.telemetry()) {
+                let reason = format!(
+                    "revalidation halted by GitHub API rate-limit guard to preserve {RUN_PURGE_RATE_LIMIT_HEADROOM}-request headroom ({remaining} remaining); target was not checked"
+                );
+                items.push(RunPurgeRevalidationItem {
+                    repository: planned.repository.full_name.clone(),
+                    run_id: planned.id,
+                    state: RunPurgeRevalidationState::RevalidationFailed,
+                    missing_artifact_ids: Vec::new(),
+                    changed_artifact_ids: Vec::new(),
+                    unexpected_artifact_ids: Vec::new(),
+                    current_run: None,
+                    error: Some(reason.clone()),
+                });
+                rate_limit_halt_reason = Some(reason);
+                continue;
+            }
+
             let item = match self
                 .provider
                 .workflow_run(&planned.repository, planned.id)
@@ -486,26 +528,42 @@ impl RunPurgeRevalidationService {
                             error: None,
                         }
                     }
-                    Err(error) => RunPurgeRevalidationItem {
+                    Err(error) => {
+                        if matches!(error, ProviderError::RateLimited { .. }) {
+                            rate_limit_halt_reason = Some(
+                                "revalidation halted by GitHub API rate-limit guard after provider rate limit; later targets were not checked"
+                                    .to_owned(),
+                            );
+                        }
+                        RunPurgeRevalidationItem {
+                            repository: planned.repository.full_name.clone(),
+                            run_id: planned.id,
+                            state: RunPurgeRevalidationState::RevalidationFailed,
+                            missing_artifact_ids: Vec::new(),
+                            changed_artifact_ids: Vec::new(),
+                            unexpected_artifact_ids: Vec::new(),
+                            current_run: Some(current_run),
+                            error: Some(error.to_string()),
+                        }
+                    },
+                },
+                Err(error) => {
+                    if matches!(error, ProviderError::RateLimited { .. }) {
+                        rate_limit_halt_reason = Some(
+                            "revalidation halted by GitHub API rate-limit guard after provider rate limit; later targets were not checked"
+                                .to_owned(),
+                        );
+                    }
+                    RunPurgeRevalidationItem {
                         repository: planned.repository.full_name.clone(),
                         run_id: planned.id,
                         state: RunPurgeRevalidationState::RevalidationFailed,
                         missing_artifact_ids: Vec::new(),
                         changed_artifact_ids: Vec::new(),
                         unexpected_artifact_ids: Vec::new(),
-                        current_run: Some(current_run),
+                        current_run: None,
                         error: Some(error.to_string()),
-                    },
-                },
-                Err(error) => RunPurgeRevalidationItem {
-                    repository: planned.repository.full_name.clone(),
-                    run_id: planned.id,
-                    state: RunPurgeRevalidationState::RevalidationFailed,
-                    missing_artifact_ids: Vec::new(),
-                    changed_artifact_ids: Vec::new(),
-                    unexpected_artifact_ids: Vec::new(),
-                    current_run: None,
-                    error: Some(error.to_string()),
+                    }
                 },
             };
             items.push(item);
@@ -1019,6 +1077,12 @@ fn step(state: RunPurgeExecutionState, error: Option<String>) -> RunPurgeStepRes
     RunPurgeStepResult { state, error }
 }
 
+fn rate_limit_guard_remaining(telemetry: ProviderTelemetry) -> Option<u64> {
+    telemetry
+        .rate_limit_remaining
+        .filter(|remaining| *remaining <= RUN_PURGE_RATE_LIMIT_HEADROOM)
+}
+
 fn execution_item_hit_rate_limit(item: &RunPurgeExecutionItem) -> bool {
     item.logs
         .error
@@ -1155,6 +1219,14 @@ pub enum RunPurgeError {
         repository: String,
         run_id: u64,
         artifact_id: u64,
+    },
+    #[error(
+        "workflow-run purge {phase} halted by GitHub API rate-limit guard: {remaining} requests remaining, reserving {reserved}"
+    )]
+    RateLimitHeadroomGuard {
+        phase: &'static str,
+        remaining: u64,
+        reserved: u64,
     },
     #[error("authenticated account changed from {expected} to {current}")]
     AccountMismatch { expected: String, current: String },
