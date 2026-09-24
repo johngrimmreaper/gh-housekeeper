@@ -204,20 +204,20 @@ Defaults must remain safe. Missing daemon configuration must not imply automatic
 
 ## Business-day retention
 
-`keep_days` is elapsed 24-hour retention.
+Workflow-run policy already supports `keep_business_days` in `[defaults.runs]` and in `workflow_run` rules. `keep_days` still counts elapsed 24-hour periods. The two retention fields cannot be set in the same defaults block or rule; a matching retention rule replaces the default retention mode.
 
-The requested “Friday must still be available Monday” behavior needs a separate business-calendar policy. A future `keep_business_days` design must define timezone, weekends, holidays, DST behavior, and the timestamp from which retention is counted.
+Business days are Monday through Friday in UTC, with no holiday calendar. The creation date is excluded. A completed run expires at its creation time of day on the Nth following weekday: with `keep_business_days = 2`, a Friday run remains available Monday and expires Tuesday at that UTC time. Weekend creation starts counting Monday. Non-completed runs never become policy deletion targets.
 
-Until then, an aggressive elapsed policy can combine a small `keep_days` with `keep_latest` to reduce risk, but that is not equivalent to business-day semantics.
+Workflow-run `keep_latest` still groups by repository, workflow ID, and branch by default. `keep_latest_by = "workflow"` counts matching runs across branches within each repository and workflow ID. Exact local run protection takes precedence over both retention and latest-run selection. These decisions are available through the existing CLI classification and policy-driven purge planning; a future daemon must reuse the same policy and safety services. See [POLICY.md](POLICY.md) for full semantics.
 
 ## Implementation stages
 
-### Stage 1 — current slice
+### Stage 1 — implemented foundation
 
 - workflow-run policy resource;
 - `[defaults.runs]`;
 - run selectors;
-- `protect`, `keep_days`, `keep_latest`;
+- `protect`, `keep_days`, `keep_business_days`, `keep_latest`, and `keep_latest_by`;
 - read-only `classify runs`;
 - `purge plan runs --policy PATH`;
 - policy fingerprint carried into the immutable run-purge plan;
