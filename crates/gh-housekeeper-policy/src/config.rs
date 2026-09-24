@@ -15,6 +15,14 @@ pub enum PolicyResource {
     WorkflowRun,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeepLatestBy {
+    #[default]
+    WorkflowBranch,
+    Workflow,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CachePolicyDefaults {
@@ -36,14 +44,17 @@ impl Default for CachePolicyDefaults {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRunPolicyDefaults {
-    #[serde(default = "default_keep_days")]
-    pub keep_days: u64,
+    #[serde(default)]
+    pub keep_days: Option<u64>,
+    #[serde(default)]
+    pub keep_business_days: Option<u64>,
 }
 
 impl Default for WorkflowRunPolicyDefaults {
     fn default() -> Self {
         Self {
-            keep_days: DEFAULT_KEEP_DAYS,
+            keep_days: None,
+            keep_business_days: None,
         }
     }
 }
@@ -94,9 +105,14 @@ impl PolicyConfig {
             hash_u64(&mut hash, self.defaults.caches.keep_days);
             hash_optional_u64(&mut hash, 9, self.defaults.caches.keep_unused_days);
         }
-        if self.defaults.runs != WorkflowRunPolicyDefaults::default() {
+        if self.defaults.runs.keep_days.unwrap_or(DEFAULT_KEEP_DAYS) != DEFAULT_KEEP_DAYS
+            || self.defaults.runs.keep_business_days.is_some()
+        {
             hash_bytes(&mut hash, b"workflow-run-defaults");
-            hash_u64(&mut hash, self.defaults.runs.keep_days);
+            hash_u64(&mut hash, self.defaults.runs.keep_days.unwrap_or(DEFAULT_KEEP_DAYS));
+            if self.defaults.runs.keep_business_days.is_some() {
+                hash_optional_u64(&mut hash, 14, self.defaults.runs.keep_business_days);
+            }
         }
 
         for rule in &self.rules {
@@ -121,6 +137,10 @@ impl PolicyConfig {
                     hash_bytes(&mut hash, b"workflow-run-rule");
                     hash_optional_str(&mut hash, 12, rule.event.as_deref());
                     hash_optional_str(&mut hash, 13, rule.conclusion.as_deref());
+                    if rule.keep_latest_by == Some(KeepLatestBy::Workflow) {
+                        hash_bytes(&mut hash, b"keep-latest-by-workflow");
+                    }
+                    hash_optional_u64(&mut hash, 14, rule.keep_business_days);
                 }
             }
         }
@@ -129,6 +149,13 @@ impl PolicyConfig {
     }
 
     pub fn validate(&self) -> Result<(), PolicyError> {
+        if self.defaults.runs.keep_days.is_some()
+            && self.defaults.runs.keep_business_days.is_some()
+        {
+            return Err(PolicyError::Validation(
+                "defaults.runs cannot combine keep_days and keep_business_days".to_owned(),
+            ));
+        }
         let mut ids = HashSet::new();
 
         for rule in &self.rules {
@@ -146,12 +173,26 @@ impl PolicyConfig {
             }
 
             if rule.keep_days.is_none()
+                && rule.keep_business_days.is_none()
                 && rule.keep_unused_days.is_none()
                 && rule.keep_latest.is_none()
                 && rule.protect != Some(true)
             {
                 return Err(PolicyError::Validation(format!(
-                    "policy rule {} has no action; set keep_days, keep_unused_days, keep_latest, or protect = true",
+                    "policy rule {} has no action; set keep_days, keep_business_days, keep_unused_days, keep_latest, or protect = true",
+                    rule.id
+                )));
+            }
+
+            if rule.keep_latest_by.is_some() && rule.keep_latest.is_none() {
+                return Err(PolicyError::Validation(format!(
+                    "policy rule {} requires keep_latest when keep_latest_by is set",
+                    rule.id
+                )));
+            }
+            if rule.keep_days.is_some() && rule.keep_business_days.is_some() {
+                return Err(PolicyError::Validation(format!(
+                    "policy rule {} cannot combine keep_days and keep_business_days",
                     rule.id
                 )));
             }
@@ -163,6 +204,8 @@ impl PolicyConfig {
                         || rule.keep_unused_days.is_some()
                         || rule.event.is_some()
                         || rule.conclusion.is_some()
+                        || rule.keep_business_days.is_some()
+                        || rule.keep_latest_by.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
                             "artifact policy rule {} cannot use cache-only key, ref, or keep_unused_days fields or workflow-run-only event or conclusion fields",
@@ -176,6 +219,8 @@ impl PolicyConfig {
                         || rule.branch.is_some()
                         || rule.event.is_some()
                         || rule.conclusion.is_some()
+                        || rule.keep_business_days.is_some()
+                        || rule.keep_latest_by.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
                             "cache policy rule {} cannot use artifact-only/run-only workflow, artifact, branch, event, or conclusion fields",
@@ -232,6 +277,8 @@ pub struct PolicyRule {
     #[serde(default)]
     pub keep_days: Option<u64>,
     #[serde(default)]
+    pub keep_business_days: Option<u64>,
+    #[serde(default)]
     pub keep_unused_days: Option<u64>,
     #[serde(default)]
     pub event: Option<String>,
@@ -239,6 +286,8 @@ pub struct PolicyRule {
     pub conclusion: Option<String>,
     #[serde(default)]
     pub keep_latest: Option<usize>,
+    #[serde(default)]
+    pub keep_latest_by: Option<KeepLatestBy>,
     #[serde(default)]
     pub protect: Option<bool>,
 }
@@ -374,7 +423,7 @@ mod tests {
         assert_eq!(PolicyDefaults::default().keep_days, 30);
         assert_eq!(PolicyDefaults::default().caches.keep_days, 30);
         assert_eq!(PolicyDefaults::default().caches.keep_unused_days, None);
-        assert_eq!(PolicyDefaults::default().runs.keep_days, 30);
+        assert_eq!(PolicyDefaults::default().runs.keep_days, None);
     }
 
     #[test]
@@ -447,7 +496,7 @@ keep_latest = 3
         )
         .unwrap();
 
-        assert_eq!(config.defaults.runs.keep_days, 2);
+        assert_eq!(config.defaults.runs.keep_days, Some(2));
         assert_eq!(config.rules[0].resource, PolicyResource::WorkflowRun);
         assert_eq!(config.rules[0].event.as_deref(), Some("push"));
         assert_eq!(config.rules[0].conclusion.as_deref(), Some("success"));
@@ -467,6 +516,48 @@ keep_days = 7
         .unwrap();
 
         assert_eq!(config.rules[0].resource, PolicyResource::Artifact);
+    }
+
+    #[test]
+    fn business_days_and_latest_grouping_validate_without_changing_legacy_fingerprints() {
+        let business = PolicyConfig::from_toml(r#"
+[defaults.runs]
+keep_business_days = 2
+[[rules]]
+id = "all-branches"
+resource = "workflow_run"
+keep_latest = 2
+keep_latest_by = "workflow"
+"#).unwrap();
+        assert_eq!(business.defaults.runs.keep_business_days, Some(2));
+        assert_eq!(business.rules[0].keep_latest_by, Some(KeepLatestBy::Workflow));
+
+        let legacy = PolicyConfig::from_toml(r#"
+[[rules]]
+id = "all-branches"
+resource = "workflow_run"
+keep_latest = 2
+"#).unwrap();
+        let explicit_legacy = PolicyConfig::from_toml(r#"
+[[rules]]
+id = "all-branches"
+resource = "workflow_run"
+keep_latest = 2
+keep_latest_by = "workflow_branch"
+"#).unwrap();
+        assert_eq!(legacy.fingerprint(), explicit_legacy.fingerprint());
+        assert_ne!(legacy.fingerprint(), business.fingerprint());
+
+        for input in [
+            "[defaults.runs]\nkeep_days = 30\nkeep_business_days = 2\n",
+            "[[rules]]\nid = 'x'\nresource = 'workflow_run'\nkeep_days = 2\nkeep_business_days = 2\n",
+            "[[rules]]\nid = 'x'\nresource = 'workflow_run'\nkeep_latest_by = 'workflow'\n",
+            "[[rules]]\nid = 'x'\nresource = 'cache'\nkeep_latest = 2\nkeep_latest_by = 'workflow'\n",
+            "[[rules]]\nid = 'x'\nkeep_business_days = 2\n",
+            "[[rules]]\nid = 'x'\nresource = 'workflow_run'\nkeep_latest = 2\nkeep_latest_by = 'repository'\n",
+        ] {
+            assert!(PolicyConfig::from_toml(input).is_err(), "accepted invalid policy: {input}");
+        }
     }
 
     #[test]
