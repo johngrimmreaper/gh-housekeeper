@@ -520,7 +520,11 @@ struct PurgeCachesPlanCommand {
     )]
     all_caches: bool,
 
-    #[arg(long, requires = "all_caches", help = "For --all-caches, cache key glob")]
+    #[arg(
+        long,
+        requires = "all_caches",
+        help = "For --all-caches, cache key glob"
+    )]
     key: Option<String>,
 
     #[arg(
@@ -743,7 +747,9 @@ async fn main() -> Result<()> {
                     run_purge_plan_caches(provider()?, command).await
                 }
             },
-            PurgeAction::Revalidate(command) => run_purge_revalidate_any(provider()?, command).await,
+            PurgeAction::Revalidate(command) => {
+                run_purge_revalidate_any(provider()?, command).await
+            }
             PurgeAction::Apply(command) => run_purge_apply_any(provider()?, command).await,
             PurgeAction::History(command) => match command.resource {
                 PurgeHistoryResource::Runs => run_purge_history_runs(command),
@@ -2284,8 +2290,12 @@ async fn run_purge_plan_caches(
         .build(&snapshot, selected, selection)
         .await
         .context("failed to build immutable cache purge plan")?;
-    write_cache_purge_plan_atomic_new(&command.output, &plan)
-        .with_context(|| format!("failed to persist cache purge plan {}", command.output.display()))?;
+    write_cache_purge_plan_atomic_new(&command.output, &plan).with_context(|| {
+        format!(
+            "failed to persist cache purge plan {}",
+            command.output.display()
+        )
+    })?;
 
     match command.format {
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
@@ -2337,11 +2347,7 @@ fn purge_plan_kind(path: &std::path::Path) -> Result<PurgePlanKind> {
         .with_context(|| format!("failed to read purge plan {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&input)
         .with_context(|| format!("invalid purge plan JSON {}", path.display()))?;
-    if value
-        .get("resource")
-        .and_then(|resource| resource.as_str())
-        == Some("actions_cache")
-    {
+    if value.get("resource").and_then(|resource| resource.as_str()) == Some("actions_cache") {
         Ok(PurgePlanKind::Caches)
     } else {
         Ok(PurgePlanKind::Runs)
@@ -2385,11 +2391,18 @@ async fn run_purge_revalidate_caches(
             println!("Targets checked:      {}", report.items.len());
             println!(
                 "Safe to apply:        {}",
-                if report.is_safe_to_apply() { "yes" } else { "no" }
+                if report.is_safe_to_apply() {
+                    "yes"
+                } else {
+                    "no"
+                }
             );
             if !report.items.is_empty() {
                 println!();
-                println!("{:<12} {:<40} {:<22} DETAILS", "CACHE ID", "REPOSITORY", "STATE");
+                println!(
+                    "{:<12} {:<40} {:<22} DETAILS",
+                    "CACHE ID", "REPOSITORY", "STATE"
+                );
                 for item in &report.items {
                     println!(
                         "{:<12} {:<40} {:<22}",
@@ -2876,24 +2889,22 @@ fn run_purge_history_caches(command: PurgeHistoryCommand) -> Result<()> {
             cache_purge_history_matches_repository(record, command.repository.as_deref())
         })
         .collect::<Vec<_>>();
-    let pending_intents = history
-        .pending_intents()
-        .into_iter()
-        .filter(|intent| {
-            command
-                .repository
-                .as_deref()
-                .map(|repository| {
-                    intent.plan.targets().iter().any(|cache| {
-                        cache
-                            .repository
-                            .full_name
-                            .eq_ignore_ascii_case(repository)
+    let pending_intents =
+        history
+            .pending_intents()
+            .into_iter()
+            .filter(|intent| {
+                command
+                    .repository
+                    .as_deref()
+                    .map(|repository| {
+                        intent.plan.targets().iter().any(|cache| {
+                            cache.repository.full_name.eq_ignore_ascii_case(repository)
+                        })
                     })
-                })
-                .unwrap_or(true)
-        })
-        .collect::<Vec<_>>();
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
 
     match command.format {
         OutputFormat::Json => println!(
@@ -2958,10 +2969,7 @@ fn read_cache_purge_plan(path: &std::path::Path) -> Result<CachePurgePlan> {
     Ok(plan)
 }
 
-fn write_cache_purge_plan_atomic_new(
-    path: &std::path::Path,
-    value: &CachePurgePlan,
-) -> Result<()> {
+fn write_cache_purge_plan_atomic_new(path: &std::path::Path, value: &CachePurgePlan) -> Result<()> {
     if path.exists() {
         anyhow::bail!(
             "refusing to overwrite existing cache purge-plan file {}",
@@ -3097,9 +3105,7 @@ fn cache_purge_repository_count(plan: &CachePurgePlan) -> usize {
 }
 
 fn cache_purge_confirmation_phrase(cache_count: usize, repository_count: usize) -> String {
-    format!(
-        "purge {cache_count} caches from {repository_count} repositories"
-    )
+    format!("purge {cache_count} caches from {repository_count} repositories")
 }
 
 fn cache_purge_history_matches_repository(
