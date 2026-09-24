@@ -141,11 +141,13 @@ Policy output uses structured decisions:
 
 Every decision contains structured reason codes, human-readable explanations, and applicable rule identifiers.
 
-A workflow run that is not completed is always `Keep` with reason `run_not_completed`. Policy retention never turns an active run into a destructive target.
+A workflow run that is not completed is never a deletion target. It is `Keep` with reason `run_not_completed` unless an exact local protection takes precedence and makes it `Protected` (or `ManualReview` if the recorded identity is uncertain).
 
 ## Precedence and conflicts
 
-Explicit protection outranks destructive retention. `keep_latest` then protects selected newest resources from ordinary retention deletion.
+An exact local workflow-run protection takes precedence over policy `protect = true`, `keep_latest`, and retention. Identity mismatch, repository rename, or an unverifiable local entry becomes `ManualReview`, not `Delete`. The local reason code is `local_protection`; uncertain identities use `local_protection_identity_mismatch`, `local_protection_repository_renamed`, or `local_protection_unverifiable`. Policy protection then outranks destructive retention. `keep_latest` protects selected newest resources from ordinary retention deletion.
+
+The protection store is independent of the TOML policy and its fingerprint. Initialize it with `gh-housekeeper runs protections init`. CLI, daemon, and GUI must use the same persisted store. A missing, corrupt, duplicate, or unsupported store blocks run purge instead of being interpreted as an empty list. `runs protections` lists local entries without GitHub access; `runs protections --verify` optionally checks remote identity. Neither a local protection nor `keep_latest` can make GitHub retain an expired run indefinitely.
 
 For ordinary retention, the matching rule with the greatest number of selectors wins. Equally specific artifact or workflow-run retention rules with conflicting `keep_days` values become `ManualReview`.
 
@@ -220,6 +222,8 @@ gh-housekeeper purge plan runs \
 ```
 
 The resulting plan records the policy fingerprint and feeds the exact selected runs into the existing dependency-aware run purge:
+
+Explicit `--run-id` selection refuses a protected run. Bulk and policy selection omit protected runs; identity uncertainty blocks planning. Old plans are rechecked against current local protection state before consent and again just in time under a per-run lock, before deleting logs or artifacts. An unresolved purge intent never overrides a newly added protection.
 
 ```text
 complete workflow-run snapshot

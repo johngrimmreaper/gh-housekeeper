@@ -129,6 +129,8 @@ complete run inventory
   -> durable final audit
 ```
 
+The daemon must open the same initialized versioned run-protection store as the CLI before enabling automated run cleanup. It passes the shared `RunProtectionSource` into classification, planning, revalidation, and execution; a missing or unreadable store blocks the cycle. A GUI protection action must use the same storage/service interface. A daemon running under another user must be configured to share the intended store explicitly or leave destructive cleanup disabled. Warning/critical storage pressure does not override a protected run.
+
 For artifacts/caches, their corresponding existing exact-target pipelines remain authoritative.
 
 The daemon must not:
