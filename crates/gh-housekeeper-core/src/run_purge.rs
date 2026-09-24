@@ -12,6 +12,7 @@ use std::{
 use thiserror::Error;
 
 pub const RUN_PURGE_PLAN_SCHEMA_VERSION: u32 = 1;
+const RUN_PURGE_RATE_LIMIT_HEADROOM: u64 = 250;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -668,22 +669,42 @@ impl RunPurgeExecutionService {
 
         let started_at = Utc::now();
         let mut items = Vec::with_capacity(plan.targets().len());
-        let mut rate_limit_halted = false;
+        let mut rate_limit_halt_reason = None;
         for target in plan.targets() {
-            if rate_limit_halted {
+            if let Some(reason) = &rate_limit_halt_reason {
                 items.push(blocked_execution_item(
                     target,
                     RunPurgeExecutionState::Blocked,
-                    Some(
-                        "batch halted after provider rate limit; target was not attempted"
-                            .to_owned(),
-                    ),
+                    Some(reason.clone()),
                 ));
                 continue;
             }
 
+            if let Some(remaining) = self
+                .provider
+                .telemetry()
+                .rate_limit_remaining
+                .filter(|remaining| *remaining <= RUN_PURGE_RATE_LIMIT_HEADROOM)
+            {
+                let reason = format!(
+                    "batch halted by GitHub API rate-limit guard to preserve {RUN_PURGE_RATE_LIMIT_HEADROOM}-request headroom ({remaining} remaining); target was not attempted"
+                );
+                items.push(blocked_execution_item(
+                    target,
+                    RunPurgeExecutionState::Blocked,
+                    Some(reason.clone()),
+                ));
+                rate_limit_halt_reason = Some(reason);
+                continue;
+            }
+
             let item = self.execute_target(target).await;
-            rate_limit_halted = execution_item_hit_rate_limit(&item);
+            if execution_item_hit_rate_limit(&item) {
+                rate_limit_halt_reason = Some(
+                    "batch halted by GitHub API rate-limit guard after provider rate limit; target was not attempted"
+                        .to_owned(),
+                );
+            }
             items.push(item);
         }
 
