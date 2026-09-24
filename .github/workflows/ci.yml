@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [main, work/run-business-days-latest-by]
+    branches: [main]
   pull_request:
 
 permissions:
