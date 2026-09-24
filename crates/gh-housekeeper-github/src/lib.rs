@@ -75,6 +75,12 @@ pub struct GithubClient {
 }
 
 impl GithubClient {
+    pub fn normalized_api_url(base_url: Option<&str>) -> ProviderResult<String> {
+        let url = reqwest::Url::parse(base_url.unwrap_or(DEFAULT_API_URL))
+            .map_err(|error| ProviderError::InvalidResponse(format!("invalid API URL: {error}")))?;
+        Ok(url.to_string().trim_end_matches('/').to_owned())
+    }
+
     pub fn from_environment() -> ProviderResult<Self> {
         Self::new(SecretToken::discover()?)
     }
@@ -84,6 +90,8 @@ impl GithubClient {
     }
 
     pub fn with_base_url(token: SecretToken, base_url: impl Into<String>) -> ProviderResult<Self> {
+        let input = base_url.into();
+        let base_url = Self::normalized_api_url(Some(&input))?;
         let http = reqwest::Client::builder()
             .user_agent(concat!("gh-housekeeper/", env!("CARGO_PKG_VERSION")))
             .build()
@@ -92,7 +100,7 @@ impl GithubClient {
         Ok(Self {
             http,
             token,
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
+            base_url,
             api_requests: AtomicU64::new(0),
             rate_limit_remaining: AtomicU64::new(RATE_UNKNOWN),
             last_mutation_slot: Mutex::new(None),
@@ -451,6 +459,10 @@ impl CachePurgeProvider for GithubClient {
 
 #[async_trait]
 impl WorkflowRunProvider for GithubClient {
+    fn provider_instance(&self) -> String {
+        self.base_url.clone()
+    }
+
     async fn workflow_runs(&self, repository: &Repository) -> ProviderResult<Vec<WorkflowRun>> {
         validate_full_name(&repository.full_name)?;
         let repository_ref = RepositoryRef::from(repository);
@@ -487,9 +499,27 @@ impl WorkflowRunProvider for GithubClient {
     ) -> ProviderResult<Option<WorkflowRun>> {
         validate_full_name(&repository.full_name)?;
         let path = format!("/repos/{}/actions/runs/{run_id}", repository.full_name);
-        self.get_optional_json::<GithubWorkflowRun>(&path)
-            .await
-            .map(|run| run.map(|run| run.into_domain(repository.clone())))
+        let Some(run) = self.get_optional_json::<GithubWorkflowRun>(&path).await? else {
+            return Ok(None);
+        };
+        if let Some(remote) = run.repository.as_ref() {
+            if remote.id != repository.id || remote.full_name != repository.full_name {
+                return Err(ProviderError::InvalidResponse(format!(
+                    "workflow run {run_id} belongs to {} (repository ID {}), not {} (ID {})",
+                    remote.full_name, remote.id, repository.full_name, repository.id
+                )));
+            }
+        } else {
+            // Older provider responses may omit the nested repository. Confirm the
+            // canonical repository identity instead of trusting the caller's ref.
+            let remote = self.get_repository(&repository.full_name).await?;
+            if remote.id != repository.id || remote.full_name != repository.full_name {
+                return Err(ProviderError::InvalidResponse(format!(
+                    "workflow run {run_id} repository lookup changed identity"
+                )));
+            }
+        }
+        Ok(Some(run.into_domain(repository.clone())))
     }
 
     async fn workflow_run_artifacts(
@@ -684,6 +714,13 @@ struct GithubWorkflowRun {
     run_attempt: u64,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    repository: Option<GithubRunRepository>,
+}
+
+#[derive(Deserialize)]
+struct GithubRunRepository {
+    id: u64,
+    full_name: String,
 }
 
 impl GithubWorkflowRun {
@@ -978,7 +1015,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_exact_run_and_snapshots_its_artifacts_without_mutation() {
-        let run = r#"{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z"}"#.to_owned();
+        let run = r#"{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z","repository":{"id":1,"full_name":"example-user/project-alpha"}}"#.to_owned();
         let artifacts = r#"{"total_count":1,"artifacts":[{"id":9001,"name":"build-output","size_in_bytes":4096,"created_at":"2026-09-01T12:04:00Z","updated_at":"2026-09-01T12:04:00Z","expires_at":"2026-12-01T12:04:00Z","expired":false,"digest":"sha256:fictional","workflow_run":{"id":7001,"head_branch":"main","head_sha":"abc"}}]}"#.to_owned();
         let (base_url, requests, server) = spawn_http_fixture(vec![run, artifacts]);
         let client =

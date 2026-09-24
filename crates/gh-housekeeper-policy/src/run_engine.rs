@@ -1,5 +1,8 @@
 use crate::{Decision, DecisionReason, PolicyEngine, PolicyRule, ReasonCode};
-use gh_housekeeper_core::{WorkflowRun, WorkflowRunInventorySnapshot};
+use gh_housekeeper_core::{
+    ProtectionAssessment, ProtectionIndex, ProtectionReviewCode, WorkflowRun,
+    WorkflowRunInventorySnapshot,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,12 +55,23 @@ impl PolicyEngine {
     pub fn classify_workflow_run_snapshot(
         &self,
         snapshot: &WorkflowRunInventorySnapshot,
+        protections: &ProtectionIndex,
+        provider_instance: &str,
     ) -> WorkflowRunClassificationReport {
         let keep_latest = self.workflow_run_keep_latest_selections(&snapshot.runs);
         let decisions = snapshot
             .runs
             .iter()
-            .map(|run| self.classify_workflow_run(run, snapshot.scanned_at, &keep_latest))
+            .map(|run| {
+                self.classify_workflow_run(
+                    run,
+                    snapshot.scanned_at,
+                    &keep_latest,
+                    protections,
+                    provider_instance,
+                    &snapshot.account,
+                )
+            })
             .collect();
 
         WorkflowRunClassificationReport {
@@ -119,7 +133,49 @@ impl PolicyEngine {
         run: &WorkflowRun,
         scanned_at: chrono::DateTime<chrono::Utc>,
         keep_latest: &BTreeMap<RunIdentity, Vec<String>>,
+        protections: &ProtectionIndex,
+        provider_instance: &str,
+        account: &gh_housekeeper_core::Account,
     ) -> WorkflowRunDecision {
+        match protections.assess(provider_instance, account, run) {
+            ProtectionAssessment::Protected(entry) => {
+                return run_decision(
+                    run,
+                    Decision::Protected,
+                    None,
+                    vec![DecisionReason {
+                        code: ReasonCode::LocalProtection,
+                        rule_id: None,
+                        explanation: format!("local protection: {}", entry.reason),
+                    }],
+                );
+            }
+            ProtectionAssessment::Review { code, explanation } => {
+                let code = match code {
+                    ProtectionReviewCode::IdentityMismatch => {
+                        ReasonCode::LocalProtectionIdentityMismatch
+                    }
+                    ProtectionReviewCode::RepositoryRenamed => {
+                        ReasonCode::LocalProtectionRepositoryRenamed
+                    }
+                    ProtectionReviewCode::Unverifiable => {
+                        ReasonCode::LocalProtectionUnverifiable
+                    }
+                };
+                return run_decision(
+                    run,
+                    Decision::ManualReview,
+                    None,
+                    vec![DecisionReason {
+                        code,
+                        rule_id: None,
+                        explanation,
+                    }],
+                );
+            }
+            ProtectionAssessment::NoEntry => {}
+        }
+
         if !run.is_completed() {
             return run_decision(
                 run,
@@ -358,7 +414,7 @@ mod tests {
                 "main",
                 "in_progress",
                 1,
-            )]));
+            )]), &ProtectionIndex::default(), "test://runs");
 
         assert_eq!(report.decisions[0].decision, Decision::Keep);
         assert_eq!(
@@ -393,7 +449,7 @@ keep_days = 7
                 "main",
                 "completed",
                 20,
-            )]));
+            )]), &ProtectionIndex::default(), "test://runs");
 
         assert_eq!(report.decisions[0].decision, Decision::Delete);
         assert_eq!(report.decisions[0].effective_keep_days, Some(7));
@@ -426,7 +482,7 @@ keep_latest = 2
                 run(4, "example-user/project-beta", 10, "main", "completed", 1),
                 run(5, "example-user/project-beta", 10, "main", "completed", 2),
                 run(6, "example-user/project-beta", 10, "main", "completed", 3),
-            ]));
+            ]), &ProtectionIndex::default(), "test://runs");
 
         let kept = report.count(Decision::Keep);
         let deleted = report.count(Decision::Delete);
@@ -465,8 +521,41 @@ protect = true
                 "release-1",
                 "completed",
                 1,
-            )]));
+            )]), &ProtectionIndex::default(), "test://runs");
 
         assert_eq!(report.decisions[0].decision, Decision::Protected);
+    }
+
+    #[test]
+    fn local_protection_outranks_policy_protection_and_retention() {
+        let input = run(9, "example-user/project-alpha", 10, "main", "completed", 1);
+        let snapshot = snapshot(vec![input.clone()]);
+        let entry = gh_housekeeper_core::RunProtection::from_verified_run(
+            "test://runs",
+            &snapshot.account,
+            &input,
+            "Evidence for review".to_owned(),
+        )
+        .unwrap();
+        let protections = ProtectionIndex::new(vec![entry]).unwrap();
+        let config = PolicyConfig::from_toml(
+            r#"
+[defaults.runs]
+keep_days = 1
+
+[[rules]]
+id = "protect-main"
+resource = "workflow_run"
+branch = "main"
+protect = true
+"#,
+        )
+        .unwrap();
+        let report = PolicyEngine::new(config)
+            .unwrap()
+            .classify_workflow_run_snapshot(&snapshot, &protections, "test://runs");
+        assert_eq!(report.decisions[0].decision, Decision::Protected);
+        assert_eq!(report.decisions[0].reasons[0].code, ReasonCode::LocalProtection);
+        assert_eq!(report.delete_count(), 0);
     }
 }

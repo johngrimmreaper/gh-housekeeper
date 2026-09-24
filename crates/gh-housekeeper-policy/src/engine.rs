@@ -29,6 +29,10 @@ pub enum ReasonCode {
     RuleUnusedRetentionActive,
     RuleUnusedRetentionExpired,
     RunNotCompleted,
+    LocalProtection,
+    LocalProtectionIdentityMismatch,
+    LocalProtectionRepositoryRenamed,
+    LocalProtectionUnverifiable,
 }
 
 impl ReasonCode {
@@ -46,6 +50,10 @@ impl ReasonCode {
             Self::RuleUnusedRetentionActive => "rule_unused_retention_active",
             Self::RuleUnusedRetentionExpired => "rule_unused_retention_expired",
             Self::RunNotCompleted => "run_not_completed",
+            Self::LocalProtection => "local_protection",
+            Self::LocalProtectionIdentityMismatch => "local_protection_identity_mismatch",
+            Self::LocalProtectionRepositoryRenamed => "local_protection_repository_renamed",
+            Self::LocalProtectionUnverifiable => "local_protection_unverifiable",
         }
     }
 }
