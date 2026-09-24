@@ -110,10 +110,11 @@ Planning refuses incomplete repository/run inventory and then exact-lookups each
 
 Before consent, revalidation exact-lookups the planned run and re-enumerates its run-owned artifacts. Changed artifacts and newly-visible unexpected artifacts make the reviewed plan unsafe. Missing planned artifacts may be represented as already absent; they do not authorize a replacement target.
 
-After explicit authorization, the destructive order is fixed:
+After explicit authorization, the CLI must first durably persist a write-ahead purge intent. If the local state directory cannot be resolved or the intent cannot be committed, the purge is refused before the first DELETE. The destructive order is then fixed:
 
 ```text
-JIT run/dependency validation
+durable authorized intent
+ -> JIT run/dependency validation
  -> delete run logs
  -> exact-lookup and delete each unchanged planned artifact
  -> enumerate run artifacts again
@@ -130,7 +131,7 @@ A successful run DELETE is not accepted blindly. The provider must subsequently 
 
 Interactive workflow-run purge requires a terminal and the exact lowercase word `purge`. Non-interactive purge requires explicit `--yes`. This authorization is distinct from artifact cleanup's lowercase `delete` confirmation.
 
-Workflow-run purge execution records live under a separate versioned `run-purge-audit/v1` state directory. The record preserves complete planned run and artifact snapshots plus every dependency/final-run outcome, so local audit remains meaningful after GitHub no longer exposes the deleted run or logs. Audit state remains observational and can never authorize another deletion.
+Workflow-run purge intent and execution records live under the separate versioned `run-purge-audit/v1` state directory. The intent preserves the immutable plan, reviewed remote state, and explicit authorization before mutation. The final record preserves complete planned run and artifact snapshots plus every dependency/final-run outcome and links to the corresponding intent. An intent with no matching final record is reported as pending; this is deliberately treated as possible partial/uncertain remote execution and requires inspection before retry. Audit state remains observational and can never authorize another deletion.
 
 ## Explainability
 
