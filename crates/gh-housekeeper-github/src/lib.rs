@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
     Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, CachePurgeProvider,
-    DeleteOutcome, ProviderError,
-    ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
-    WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
+    DeleteOutcome, ProviderError, ProviderResult, ProviderTelemetry, Repository, RepositoryRef,
+    ScanScope, Visibility, WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider,
+    WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -441,10 +441,7 @@ impl CachePurgeProvider for GithubClient {
         cache_id: u64,
     ) -> ProviderResult<DeleteOutcome> {
         validate_full_name(&repository.full_name)?;
-        let path = format!(
-            "/repos/{}/actions/caches/{cache_id}",
-            repository.full_name
-        );
+        let path = format!("/repos/{}/actions/caches/{cache_id}", repository.full_name);
         match self.send_with_policy(Method::DELETE, &path, true).await? {
             Some(_) => Ok(DeleteOutcome::Deleted),
             None => Ok(DeleteOutcome::AlreadyAbsent),
@@ -972,7 +969,11 @@ mod tests {
             requests,
             vec!["DELETE /repos/example-user/project-alpha/actions/caches/4242 HTTP/1.1"]
         );
-        assert!(requests.iter().all(|request| !request.contains("/releases")));
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.contains("/releases"))
+        );
     }
 
     #[tokio::test]
