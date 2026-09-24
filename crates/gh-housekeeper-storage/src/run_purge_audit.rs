@@ -553,6 +553,7 @@ mod tests {
                 branch: None,
                 event: None,
                 conclusion: None,
+                policy_hash: None,
             },
             authorization: ExecutionAuthorizationKind::InteractiveConfirmation,
             telemetry: ProviderTelemetry::default(),
