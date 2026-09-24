@@ -11,8 +11,11 @@ use serde::de::DeserializeOwned;
 use std::{
     env, fmt,
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::time::sleep;
 
@@ -20,6 +23,7 @@ const GITHUB_API_VERSION: &str = "2026-03-10";
 const DEFAULT_API_URL: &str = "https://api.github.com";
 const PER_PAGE: usize = 100;
 const RATE_UNKNOWN: u64 = u64::MAX;
+const MUTATION_PACING: Duration = Duration::from_secs(1);
 
 pub struct SecretToken(String);
 
@@ -66,6 +70,7 @@ pub struct GithubClient {
     base_url: String,
     api_requests: AtomicU64,
     rate_limit_remaining: AtomicU64,
+    last_mutation_slot: Mutex<Option<Instant>>,
 }
 
 impl GithubClient {
@@ -89,6 +94,7 @@ impl GithubClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             api_requests: AtomicU64::new(0),
             rate_limit_remaining: AtomicU64::new(RATE_UNKNOWN),
+            last_mutation_slot: Mutex::new(None),
         })
     }
 
@@ -133,6 +139,27 @@ impl GithubClient {
         }
     }
 
+    fn reserve_mutation_delay(&self, method: &Method) -> Duration {
+        if !matches!(
+            *method,
+            Method::POST | Method::PATCH | Method::PUT | Method::DELETE
+        ) {
+            return Duration::ZERO;
+        }
+
+        let now = Instant::now();
+        let mut slot = self
+            .last_mutation_slot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let reserved_at = slot
+            .map(|last| last + MUTATION_PACING)
+            .filter(|candidate| *candidate > now)
+            .unwrap_or(now);
+        *slot = Some(reserved_at);
+        reserved_at.saturating_duration_since(now)
+    }
+
     async fn send_with_policy(
         &self,
         method: Method,
@@ -142,6 +169,11 @@ impl GithubClient {
         let max_attempts = if method == Method::GET { 4 } else { 1 };
 
         for attempt in 0..max_attempts {
+            let mutation_delay = self.reserve_mutation_delay(&method);
+            if !mutation_delay.is_zero() {
+                sleep(mutation_delay).await;
+            }
+
             self.api_requests.fetch_add(1, Ordering::Relaxed);
             let response = self.request(method.clone(), path).send().await;
 
@@ -990,6 +1022,27 @@ mod tests {
         let message =
             github_error_message(r#"{"message":"rate limit exceeded","extra":"ignored"}"#);
         assert_eq!(message, "rate limit exceeded");
+    }
+
+    #[test]
+    fn mutation_slots_are_paced_without_delaying_reads() {
+        let client = GithubClient::with_base_url(
+            SecretToken("fictional-token".to_owned()),
+            "http://127.0.0.1:9",
+        )
+        .unwrap();
+
+        assert_eq!(client.reserve_mutation_delay(&Method::GET), Duration::ZERO);
+        assert_eq!(
+            client.reserve_mutation_delay(&Method::DELETE),
+            Duration::ZERO
+        );
+
+        let second_delete = client.reserve_mutation_delay(&Method::DELETE);
+        assert!(
+            second_delete >= Duration::from_millis(900),
+            "second mutation should be reserved about one second later, got {second_delete:?}"
+        );
     }
 
     #[test]
