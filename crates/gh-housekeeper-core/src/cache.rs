@@ -1,6 +1,6 @@
 use crate::{
-    Account, ProviderResult, ProviderTelemetry, Repository, RepositoryProvider, RepositoryRef,
-    ResourceScan, ScanIssue, ScanOptions, ScanScope, scan_resources,
+    Account, DeleteOutcome, ProviderResult, ProviderTelemetry, Repository, RepositoryProvider,
+    RepositoryRef, ResourceScan, ScanIssue, ScanOptions, ScanScope, scan_resources,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -76,6 +76,19 @@ pub trait CacheProvider: RepositoryProvider {
             .into_iter()
             .find(|cache| cache.id == cache_id))
     }
+}
+
+#[async_trait]
+pub trait CachePurgeProvider: CacheProvider {
+    /// Delete exactly one GitHub Actions cache by stable cache ID.
+    ///
+    /// This capability is intentionally scoped to Actions caches. Implementations must not
+    /// translate this operation into release, package, artifact, or other resource deletion.
+    async fn delete_cache(
+        &self,
+        repository: &RepositoryRef,
+        cache_id: u64,
+    ) -> ProviderResult<DeleteOutcome>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
