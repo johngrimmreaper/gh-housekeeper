@@ -104,7 +104,7 @@ No destructive live validation should use valuable existing project artifacts or
 
 Workflow-run purge uses its own immutable plan and audit types. It does not reinterpret an artifact `CleanupPlan` as a run deletion request.
 
-A run may enter a purge plan only when its snapshotted status is `completed`. Bulk selection is never implicit: callers must provide exact `--run-id` values or explicitly request `--all-completed`. Optional workflow/branch/event/conclusion/age filters may narrow all-completed selection, but they do not replace exact IDs inside the resulting plan.
+A run may enter a purge plan only when its snapshotted status is `completed`. Bulk selection is never implicit: callers must provide exact `--run-id` values or explicitly request `--all-completed`. Destructive scope is also never implicit: workflow-run purge planning requires `--repo`, `--owner`, or the explicit account-wide `--all-repositories` flag. `--all-repositories` resolves to repositories owned by the authenticated account; it does not silently include collaborator or organization-member repositories merely because they are accessible. Optional workflow/branch/event/conclusion/age filters may narrow all-completed selection, but they do not replace exact IDs inside the resulting plan.
 
 Planning refuses incomplete repository/run inventory and then exact-lookups each selected run before snapshotting its run-scoped artifacts. If the run changes or disappears during this dependency-snapshot phase, the plan is not silently retargeted.
 
@@ -129,7 +129,7 @@ The executor never deletes the run when log/artifact cleanup is incomplete. If a
 
 A successful run DELETE is not accepted blindly. The provider must subsequently return the run as absent; a still-present run or failed verification lookup becomes `VerificationFailed`, preserving uncertainty instead of claiming success.
 
-Interactive workflow-run purge requires a terminal and the exact lowercase word `purge`. Non-interactive purge requires explicit `--yes`. This authorization is distinct from artifact cleanup's lowercase `delete` confirmation.
+Interactive workflow-run purge requires a terminal. A plan touching one repository requires the exact lowercase word `purge`; a plan touching multiple repositories requires an exact count-bound phrase such as `purge 47 repositories`, derived from the immutable reviewed plan. This makes a stale or unexpectedly broader multi-repository plan visibly harder to authorize by accident. Non-interactive purge requires explicit `--yes`. This authorization is distinct from artifact cleanup's lowercase `delete` confirmation.
 
 Workflow-run purge intent and execution records live under the separate versioned `run-purge-audit/v1` state directory. The intent preserves the immutable plan, reviewed remote state, and explicit authorization before mutation. The final record preserves complete planned run and artifact snapshots plus every dependency/final-run outcome and links to the corresponding intent. An intent with no matching final record is reported as pending; this is deliberately treated as possible partial/uncertain remote execution and requires inspection before retry. Audit state remains observational and can never authorize another deletion.
 
