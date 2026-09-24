@@ -33,6 +33,7 @@ pub use revalidation::{
 };
 pub use run::{
     WorkflowRun, WorkflowRunInventoryService, WorkflowRunInventorySnapshot, WorkflowRunProvider,
+    WorkflowRunPurgeProvider,
 };
 
 use async_trait::async_trait;
