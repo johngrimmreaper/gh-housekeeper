@@ -1,4 +1,5 @@
 mod cache;
+mod cache_purge;
 mod cleanup;
 mod execution;
 mod monitoring;
@@ -8,7 +9,14 @@ mod run_purge;
 
 pub use cache::{
     ActionsCache, CacheAggregationKey, CacheInventoryService, CacheInventorySnapshot,
-    CacheProvider, CacheStorageBucket, aggregate_caches,
+    CacheProvider, CachePurgeProvider, CacheStorageBucket, aggregate_caches,
+};
+pub use cache_purge::{
+    CACHE_PURGE_PLAN_SCHEMA_VERSION, CachePurgeError, CachePurgeExecutionItem,
+    CachePurgeExecutionReport, CachePurgeExecutionService, CachePurgeExecutionState,
+    CachePurgePlan, CachePurgePlanSummary, CachePurgePlanningService,
+    CachePurgeRevalidationItem, CachePurgeRevalidationReport, CachePurgeRevalidationService,
+    CachePurgeRevalidationState, CachePurgeSelection, CachePurgeSelectionMode,
 };
 pub use cleanup::{
     CLEANUP_PLAN_SCHEMA_VERSION, CleanupPlan, CleanupPlanError, CleanupPlanSummary, CleanupTarget,
