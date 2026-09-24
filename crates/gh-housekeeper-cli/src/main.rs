@@ -2160,26 +2160,41 @@ async fn run_purge_apply(
         authorize_run_purge(false, true, Some(&response))?
     };
 
+    let paths = StatePaths::discover().context(
+        "refusing workflow-run purge because the local audit state directory could not be determined; no deletion was attempted",
+    )?;
+    let audit_store = RunPurgeAuditStore::from_paths(&paths);
+    let audit_intent = audit_store
+        .append_intent(&plan, &reviewed, authorization.kind())
+        .context(
+            "refusing workflow-run purge because the authorized pre-mutation audit intent could not be persisted; no deletion was attempted",
+        )?;
+
     let execution = RunPurgeExecutionService::new(provider)
         .execute(&plan, &reviewed, authorization)
         .await
-        .context(
-            "guarded workflow-run purge failed before a complete execution report was produced",
-        )?;
+        .with_context(|| {
+            format!(
+                "workflow-run purge did not produce a complete execution report; authorized intent is preserved at {}. Inspect remote state and this intent before retrying",
+                audit_intent.path.display()
+            )
+        })?;
 
-    let paths = StatePaths::discover().context(
-        "remote purge execution completed, but the local state directory could not be determined; inspect remote state and do not blindly retry",
-    )?;
-    let audit_store = RunPurgeAuditStore::from_paths(&paths);
-    let audit_path = audit_store.append(&execution).context(
-        "remote purge execution completed, but purge audit persistence failed; inspect remote state and do not blindly retry",
-    )?;
+    let audit_path = audit_store
+        .append_with_intent(&execution, &audit_intent.intent_id)
+        .with_context(|| {
+            format!(
+                "remote purge execution completed, but final purge audit persistence failed; authorized intent remains at {}. Inspect remote state and do not blindly retry",
+                audit_intent.path.display()
+            )
+        })?;
 
     match command.format {
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "execution": execution,
+                "audit_intent": audit_intent.path,
                 "audit_record": audit_path
             }))?
         ),
@@ -2206,6 +2221,7 @@ async fn run_purge_apply(
                 "Artifact bytes removed: {}",
                 format_bytes(execution.reclaimed_artifact_bytes())
             );
+            println!("Audit intent:          {}", audit_intent.path.display());
             println!("Audit record:          {}", audit_path.display());
 
             if !execution.is_complete_success() {
@@ -2233,18 +2249,27 @@ fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
             run_purge_history_matches_repository(record, command.repository.as_deref())
         })
         .collect::<Vec<_>>();
+    let pending_intents = history
+        .pending_intents()
+        .into_iter()
+        .filter(|intent| {
+            run_purge_intent_matches_repository(intent, command.repository.as_deref())
+        })
+        .collect::<Vec<_>>();
 
     match command.format {
         OutputFormat::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "records": records,
+                "pending_intents": pending_intents,
                 "issues": history.issues.iter().map(run_purge_audit_issue_json).collect::<Vec<_>>()
             }))?
         ),
         OutputFormat::Table => {
             println!("Workflow-run purge history");
             println!("Records:               {}", records.len());
+            println!("Pending intents:       {}", pending_intents.len());
             println!();
             println!(
                 "{:<20} {:<18} {:>8} {:>10} {:>14} AUTHORIZATION",
@@ -2259,6 +2284,29 @@ fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
                     record.execution.deleted_run_count(),
                     format_bytes(record.execution.reclaimed_artifact_bytes()),
                     format_authorization(record.execution.authorization)
+                );
+            }
+
+            if !pending_intents.is_empty() {
+                println!();
+                println!("Pending authorized purge intents:");
+                println!(
+                    "{:<20} {:<18} {:>8} {:<14} INTENT ID",
+                    "RECORDED", "ACCOUNT", "RUNS", "AUTHORIZATION"
+                );
+                for intent in pending_intents {
+                    println!(
+                        "{:<20} {:<18} {:>8} {:<14} {}",
+                        intent.recorded_at.format("%Y-%m-%d %H:%M:%S"),
+                        intent.plan.account().login,
+                        intent.plan.summary().run_count(),
+                        format_authorization(intent.authorization),
+                        intent.intent_id
+                    );
+                }
+                println!();
+                println!(
+                    "A pending intent means authorization was durably recorded but no matching final execution record is available. Inspect remote state before retrying."
                 );
             }
             print_run_purge_audit_issues(&history.issues);
@@ -2411,6 +2459,23 @@ fn authorize_run_purge(
         anyhow::bail!("purge confirmation did not match exact lowercase word 'purge'");
     }
     Ok(ExecutionAuthorization::interactive_confirmation())
+}
+
+fn run_purge_intent_matches_repository(
+    intent: &gh_housekeeper_storage::RunPurgeAuditIntent,
+    repository: Option<&str>,
+) -> bool {
+    repository
+        .map(|repository| {
+            intent.plan.targets().iter().any(|target| {
+                target
+                    .run()
+                    .repository
+                    .full_name
+                    .eq_ignore_ascii_case(repository)
+            })
+        })
+        .unwrap_or(true)
 }
 
 fn run_purge_history_matches_repository(
