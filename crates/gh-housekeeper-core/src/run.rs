@@ -227,11 +227,11 @@ mod tests {
 
         async fn workflow_run(
             &self,
-            repository: &RepositoryRef,
+            repository_ref: &RepositoryRef,
             run_id: u64,
         ) -> ProviderResult<Option<WorkflowRun>> {
             self.requests.fetch_add(1, Ordering::Relaxed);
-            let repository = repository(1, &repository.full_name);
+            let repository = repository(1, &repository_ref.full_name);
             Ok((run_id == 2).then(|| run(run_id, &repository, "completed")))
         }
 
