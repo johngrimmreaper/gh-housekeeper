@@ -319,6 +319,7 @@ mod tests {
                 planned_run: run,
                 logs: deleted.clone(),
                 artifacts: Vec::new(),
+                residual_artifacts: Vec::new(),
                 run: deleted,
             }],
         }
