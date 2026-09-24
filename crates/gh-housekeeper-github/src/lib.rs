@@ -816,6 +816,90 @@ mod tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn lists_workflow_runs_with_pagination_and_maps_metadata() {
+        let page_one = r#"{"total_count":2,"workflow_runs":[{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z"}]}"#.to_owned();
+        let page_two = r#"{"total_count":2,"workflow_runs":[{"id":7002,"name":"Rust CI","display_title":"second","event":"pull_request","status":"completed","conclusion":"failure","workflow_id":88,"head_branch":"work/example","head_sha":"def","run_number":11,"run_attempt":2,"created_at":"2026-09-02T12:00:00Z","updated_at":"2026-09-02T12:06:00Z"}]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![page_one, page_two]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let repository = Repository {
+            id: 1,
+            owner: "example-user".to_owned(),
+            name: "project-alpha".to_owned(),
+            full_name: "example-user/project-alpha".to_owned(),
+            visibility: Visibility::Public,
+            default_branch: "main".to_owned(),
+            archived: false,
+            fork: false,
+        };
+
+        let runs = WorkflowRunProvider::workflow_runs(&client, &repository)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, 7001);
+        assert_eq!(runs[0].workflow_name.as_deref(), Some("Rust CI"));
+        assert_eq!(runs[0].head_branch.as_deref(), Some("main"));
+        assert_eq!(runs[1].run_attempt, 2);
+        assert_eq!(runs[1].conclusion.as_deref(), Some("failure"));
+
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec![
+                "GET /repos/example-user/project-alpha/actions/runs?per_page=100&page=1 HTTP/1.1",
+                "GET /repos/example-user/project-alpha/actions/runs?per_page=100&page=2 HTTP/1.1",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_exact_run_and_snapshots_its_artifacts_without_mutation() {
+        let run = r#"{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z"}"#.to_owned();
+        let artifacts = r#"{"total_count":1,"artifacts":[{"id":9001,"name":"build-output","size_in_bytes":4096,"created_at":"2026-09-01T12:04:00Z","updated_at":"2026-09-01T12:04:00Z","expires_at":"2026-12-01T12:04:00Z","expired":false,"digest":"sha256:fictional","workflow_run":{"id":7001,"head_branch":"main","head_sha":"abc"}}]}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![run, artifacts]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let repository = RepositoryRef {
+            id: 1,
+            full_name: "example-user/project-alpha".to_owned(),
+        };
+
+        let run = WorkflowRunProvider::workflow_run(&client, &repository, 7001)
+            .await
+            .unwrap()
+            .unwrap();
+        let artifacts =
+            WorkflowRunProvider::workflow_run_artifacts(&client, &repository, 7001)
+                .await
+                .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(run.id, 7001);
+        assert!(run.is_completed());
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].id, 9001);
+        assert_eq!(
+            artifacts[0].workflow_run.as_ref().map(|run| run.id),
+            Some(7001)
+        );
+
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec![
+                "GET /repos/example-user/project-alpha/actions/runs/7001 HTTP/1.1",
+                "GET /repos/example-user/project-alpha/actions/runs/7001/artifacts?per_page=100&page=1 HTTP/1.1",
+            ]
+        );
+    }
+
     #[test]
     fn token_debug_output_is_redacted() {
         let token = SecretToken("fictional-secret-token".to_owned());
