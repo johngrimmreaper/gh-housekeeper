@@ -547,6 +547,7 @@ pub enum RunPurgeExecutionState {
     Changed,
     RevalidationFailed,
     DeleteFailed,
+    VerificationFailed,
     Blocked,
 }
 
@@ -569,6 +570,7 @@ pub struct RunPurgeExecutionItem {
     pub planned_run: WorkflowRun,
     pub logs: RunPurgeStepResult,
     pub artifacts: Vec<RunPurgeArtifactResult>,
+    pub residual_artifacts: Vec<Artifact>,
     pub run: RunPurgeStepResult,
 }
 
@@ -805,7 +807,7 @@ impl RunPurgeExecutionService {
             artifacts.push(result);
         }
 
-        let dependencies_clean = matches!(
+        let mut dependencies_clean = matches!(
             logs.state,
             RunPurgeExecutionState::Deleted | RunPurgeExecutionState::AlreadyAbsent
         ) && artifacts.iter().all(|artifact| {
@@ -815,10 +817,63 @@ impl RunPurgeExecutionService {
             )
         });
 
+        let mut residual_artifacts = Vec::new();
+        let mut dependency_verification_error = None;
+        if dependencies_clean {
+            match self
+                .provider
+                .workflow_run_artifacts(&planned.repository, planned.id)
+                .await
+            {
+                Ok(remaining) => {
+                    residual_artifacts = remaining;
+                    if !residual_artifacts.is_empty() {
+                        dependencies_clean = false;
+                        for result in &mut artifacts {
+                            if let Some(current) = residual_artifacts
+                                .iter()
+                                .find(|artifact| artifact.id == result.planned.id)
+                            {
+                                result.state = RunPurgeExecutionState::VerificationFailed;
+                                result.current = Some(current.clone());
+                                result.error = Some(
+                                    "artifact still exists after reported deletion".to_owned(),
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    dependencies_clean = false;
+                    dependency_verification_error = Some(error.to_string());
+                }
+            }
+        }
+
         let run = if !dependencies_clean {
+            let error = if let Some(error) = dependency_verification_error {
+                format!(
+                    "workflow run retained because dependency verification failed: {error}"
+                )
+            } else if !residual_artifacts.is_empty() {
+                let ids = residual_artifacts
+                    .iter()
+                    .map(|artifact| artifact.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "workflow run retained because artifact dependencies remain after cleanup: {ids}"
+                )
+            } else {
+                "workflow run retained because dependency cleanup was incomplete".to_owned()
+            };
             step(
-                RunPurgeExecutionState::Blocked,
-                Some("workflow run retained because dependency cleanup was incomplete".to_owned()),
+                if residual_artifacts.is_empty() && error.contains("verification failed") {
+                    RunPurgeExecutionState::VerificationFailed
+                } else {
+                    RunPurgeExecutionState::Blocked
+                },
+                Some(error),
             )
         } else {
             match self
@@ -838,7 +893,28 @@ impl RunPurgeExecutionService {
                     .delete_workflow_run(&planned.repository, planned.id)
                     .await
                 {
-                    Ok(DeleteOutcome::Deleted) => step(RunPurgeExecutionState::Deleted, None),
+                    Ok(DeleteOutcome::Deleted) => match self
+                        .provider
+                        .workflow_run(&planned.repository, planned.id)
+                        .await
+                    {
+                        Ok(None) | Err(ProviderError::NotFound(_)) => {
+                            step(RunPurgeExecutionState::Deleted, None)
+                        }
+                        Ok(Some(_)) => step(
+                            RunPurgeExecutionState::VerificationFailed,
+                            Some(
+                                "workflow run still exists after provider reported successful deletion"
+                                    .to_owned(),
+                            ),
+                        ),
+                        Err(error) => step(
+                            RunPurgeExecutionState::VerificationFailed,
+                            Some(format!(
+                                "provider reported successful workflow-run deletion, but post-delete verification failed: {error}"
+                            )),
+                        ),
+                    },
                     Ok(DeleteOutcome::AlreadyAbsent) | Err(ProviderError::NotFound(_)) => {
                         step(RunPurgeExecutionState::AlreadyAbsent, None)
                     }
@@ -858,6 +934,7 @@ impl RunPurgeExecutionService {
             planned_run: planned.clone(),
             logs,
             artifacts,
+            residual_artifacts,
             run,
         }
     }
@@ -927,6 +1004,7 @@ fn already_absent_execution_item(target: &RunPurgeTarget) -> RunPurgeExecutionIt
                 )
             })
             .collect(),
+        residual_artifacts: Vec::new(),
         run: step(RunPurgeExecutionState::AlreadyAbsent, None),
     }
 }
@@ -954,6 +1032,7 @@ fn blocked_execution_item(
                 )
             })
             .collect(),
+        residual_artifacts: Vec::new(),
         run: step(state, error),
     }
 }
