@@ -1,4 +1,4 @@
-use gh_housekeeper_core::{ActionsCache, Artifact};
+use gh_housekeeper_core::{ActionsCache, Artifact, WorkflowRun};
 use globset::Glob;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -12,6 +12,7 @@ pub enum PolicyResource {
     #[default]
     Artifact,
     Cache,
+    WorkflowRun,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,11 +35,28 @@ impl Default for CachePolicyDefaults {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WorkflowRunPolicyDefaults {
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u64,
+}
+
+impl Default for WorkflowRunPolicyDefaults {
+    fn default() -> Self {
+        Self {
+            keep_days: DEFAULT_KEEP_DAYS,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PolicyDefaults {
     #[serde(default = "default_keep_days")]
     pub keep_days: u64,
     #[serde(default)]
     pub caches: CachePolicyDefaults,
+    #[serde(default)]
+    pub runs: WorkflowRunPolicyDefaults,
 }
 
 impl Default for PolicyDefaults {
@@ -46,6 +64,7 @@ impl Default for PolicyDefaults {
         Self {
             keep_days: DEFAULT_KEEP_DAYS,
             caches: CachePolicyDefaults::default(),
+            runs: WorkflowRunPolicyDefaults::default(),
         }
     }
 }
@@ -75,6 +94,10 @@ impl PolicyConfig {
             hash_u64(&mut hash, self.defaults.caches.keep_days);
             hash_optional_u64(&mut hash, 9, self.defaults.caches.keep_unused_days);
         }
+        if self.defaults.runs != WorkflowRunPolicyDefaults::default() {
+            hash_bytes(&mut hash, b"workflow-run-defaults");
+            hash_u64(&mut hash, self.defaults.runs.keep_days);
+        }
 
         for rule in &self.rules {
             hash_bytes(&mut hash, b"rule");
@@ -86,11 +109,19 @@ impl PolicyConfig {
             hash_optional_u64(&mut hash, 6, rule.keep_days);
             hash_optional_u64(&mut hash, 7, rule.keep_latest.map(|value| value as u64));
             hash_optional_bool(&mut hash, 8, rule.protect);
-            if rule.resource == PolicyResource::Cache {
-                hash_bytes(&mut hash, b"cache-rule");
-                hash_optional_str(&mut hash, 9, rule.key.as_deref());
-                hash_optional_str(&mut hash, 10, rule.git_ref.as_deref());
-                hash_optional_u64(&mut hash, 11, rule.keep_unused_days);
+            match rule.resource {
+                PolicyResource::Artifact => {}
+                PolicyResource::Cache => {
+                    hash_bytes(&mut hash, b"cache-rule");
+                    hash_optional_str(&mut hash, 9, rule.key.as_deref());
+                    hash_optional_str(&mut hash, 10, rule.git_ref.as_deref());
+                    hash_optional_u64(&mut hash, 11, rule.keep_unused_days);
+                }
+                PolicyResource::WorkflowRun => {
+                    hash_bytes(&mut hash, b"workflow-run-rule");
+                    hash_optional_str(&mut hash, 12, rule.event.as_deref());
+                    hash_optional_str(&mut hash, 13, rule.conclusion.as_deref());
+                }
             }
         }
 
@@ -130,17 +161,36 @@ impl PolicyConfig {
                     if rule.key.is_some()
                         || rule.git_ref.is_some()
                         || rule.keep_unused_days.is_some()
+                        || rule.event.is_some()
+                        || rule.conclusion.is_some()
                     {
                         return Err(PolicyError::Validation(format!(
-                            "artifact policy rule {} cannot use cache-only key, ref, or keep_unused_days fields",
+                            "artifact policy rule {} cannot use cache/run-only key, ref, keep_unused_days, event, or conclusion fields",
                             rule.id
                         )));
                     }
                 }
                 PolicyResource::Cache => {
-                    if rule.workflow.is_some() || rule.artifact.is_some() || rule.branch.is_some() {
+                    if rule.workflow.is_some()
+                        || rule.artifact.is_some()
+                        || rule.branch.is_some()
+                        || rule.event.is_some()
+                        || rule.conclusion.is_some()
+                    {
                         return Err(PolicyError::Validation(format!(
-                            "cache policy rule {} cannot use artifact-only workflow, artifact, or branch fields",
+                            "cache policy rule {} cannot use artifact/run-only workflow, artifact, branch, event, or conclusion fields",
+                            rule.id
+                        )));
+                    }
+                }
+                PolicyResource::WorkflowRun => {
+                    if rule.artifact.is_some()
+                        || rule.key.is_some()
+                        || rule.git_ref.is_some()
+                        || rule.keep_unused_days.is_some()
+                    {
+                        return Err(PolicyError::Validation(format!(
+                            "workflow-run policy rule {} cannot use artifact/cache-only artifact, key, ref, or keep_unused_days fields",
                             rule.id
                         )));
                     }
@@ -184,6 +234,10 @@ pub struct PolicyRule {
     #[serde(default)]
     pub keep_unused_days: Option<u64>,
     #[serde(default)]
+    pub event: Option<String>,
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
     pub keep_latest: Option<usize>,
     #[serde(default)]
     pub protect: Option<bool>,
@@ -221,6 +275,21 @@ impl PolicyRule {
             && matches_optional_glob(self.git_ref.as_deref(), Some(&cache.git_ref))
     }
 
+    pub(crate) fn matches_workflow_run(&self, run: &WorkflowRun) -> bool {
+        self.resource == PolicyResource::WorkflowRun
+            && matches_optional_glob(
+                self.repository.as_deref(),
+                Some(&run.repository.full_name),
+            )
+            && matches_optional_glob(
+                self.workflow.as_deref(),
+                run.workflow_name.as_deref(),
+            )
+            && matches_optional_glob(self.branch.as_deref(), run.head_branch.as_deref())
+            && matches_optional_glob(self.event.as_deref(), Some(&run.event))
+            && matches_optional_glob(self.conclusion.as_deref(), run.conclusion.as_deref())
+    }
+
     fn patterns(&self) -> impl Iterator<Item = (&'static str, &str)> {
         [
             ("repository", self.repository.as_deref()),
@@ -229,6 +298,8 @@ impl PolicyRule {
             ("branch", self.branch.as_deref()),
             ("key", self.key.as_deref()),
             ("ref", self.git_ref.as_deref()),
+            ("event", self.event.as_deref()),
+            ("conclusion", self.conclusion.as_deref()),
         ]
         .into_iter()
         .filter_map(|(dimension, pattern)| pattern.map(|pattern| (dimension, pattern)))
@@ -309,6 +380,7 @@ mod tests {
         assert_eq!(PolicyDefaults::default().keep_days, 30);
         assert_eq!(PolicyDefaults::default().caches.keep_days, 30);
         assert_eq!(PolicyDefaults::default().caches.keep_unused_days, None);
+        assert_eq!(PolicyDefaults::default().runs.keep_days, 30);
     }
 
     #[test]
@@ -358,6 +430,34 @@ keep_unused_days = 3
         assert_eq!(config.rules[0].resource, PolicyResource::Cache);
         assert_eq!(config.rules[0].key.as_deref(), Some("linux-*"));
         assert_eq!(config.rules[0].git_ref.as_deref(), Some("refs/heads/main"));
+    }
+
+    #[test]
+    fn parses_workflow_run_defaults_and_rule() {
+        let config = PolicyConfig::from_toml(
+            r#"
+[defaults.runs]
+keep_days = 2
+
+[[rules]]
+id = "ci-main"
+resource = "workflow_run"
+repository = "example-user/*"
+workflow = "CI"
+branch = "main"
+event = "push"
+conclusion = "success"
+keep_days = 2
+keep_latest = 3
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.defaults.runs.keep_days, 2);
+        assert_eq!(config.rules[0].resource, PolicyResource::WorkflowRun);
+        assert_eq!(config.rules[0].event.as_deref(), Some("push"));
+        assert_eq!(config.rules[0].conclusion.as_deref(), Some("success"));
+        assert_eq!(config.rules[0].keep_latest, Some(3));
     }
 
     #[test]
