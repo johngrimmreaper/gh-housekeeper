@@ -494,7 +494,10 @@ struct PurgeRevalidateCommand {
 
 #[derive(Args)]
 struct PurgeApplyCommand {
-    #[arg(value_name = "PLAN", help = "Path to an immutable workflow-run purge-plan JSON file")]
+    #[arg(
+        value_name = "PLAN",
+        help = "Path to an immutable workflow-run purge-plan JSON file"
+    )]
     plan: PathBuf,
 
     #[arg(
