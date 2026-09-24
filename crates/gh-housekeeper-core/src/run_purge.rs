@@ -114,7 +114,11 @@ impl RunPurgePlan {
                     status: target.run.status.clone(),
                 });
             }
-            if !snapshot.runs.iter().any(|candidate| candidate == &target.run) {
+            if !snapshot
+                .runs
+                .iter()
+                .any(|candidate| candidate == &target.run)
+            {
                 return Err(RunPurgeError::RunNotInSnapshot {
                     repository: target.run.repository.full_name.clone(),
                     run_id: target.run.id,
@@ -317,7 +321,11 @@ impl RunPurgePlanningService {
                     status: planned_run.status.clone(),
                 });
             }
-            if !snapshot.runs.iter().any(|candidate| candidate == &planned_run) {
+            if !snapshot
+                .runs
+                .iter()
+                .any(|candidate| candidate == &planned_run)
+            {
                 return Err(RunPurgeError::RunNotInSnapshot {
                     repository: planned_run.repository.full_name.clone(),
                     run_id: planned_run.id,
@@ -435,7 +443,11 @@ impl RunPurgeRevalidationService {
                     repository: planned.repository.full_name.clone(),
                     run_id: planned.id,
                     state: RunPurgeRevalidationState::AlreadyAbsent,
-                    missing_artifact_ids: target.artifacts().iter().map(|artifact| artifact.id).collect(),
+                    missing_artifact_ids: target
+                        .artifacts()
+                        .iter()
+                        .map(|artifact| artifact.id)
+                        .collect(),
                     changed_artifact_ids: Vec::new(),
                     unexpected_artifact_ids: Vec::new(),
                     current_run: None,
@@ -515,10 +527,14 @@ struct ArtifactDrift {
 }
 
 fn artifact_drift(planned: &[Artifact], current: &[Artifact]) -> ArtifactDrift {
-    let planned_by_id: HashMap<u64, &Artifact> =
-        planned.iter().map(|artifact| (artifact.id, artifact)).collect();
-    let current_by_id: HashMap<u64, &Artifact> =
-        current.iter().map(|artifact| (artifact.id, artifact)).collect();
+    let planned_by_id: HashMap<u64, &Artifact> = planned
+        .iter()
+        .map(|artifact| (artifact.id, artifact))
+        .collect();
+    let current_by_id: HashMap<u64, &Artifact> = current
+        .iter()
+        .map(|artifact| (artifact.id, artifact))
+        .collect();
 
     let mut drift = ArtifactDrift::default();
     for artifact in planned {
@@ -683,11 +699,7 @@ impl RunPurgeExecutionService {
                 return already_absent_execution_item(target);
             }
             Ok(Some(current)) if current != *planned => {
-                return blocked_execution_item(
-                    target,
-                    RunPurgeExecutionState::Changed,
-                    None,
-                );
+                return blocked_execution_item(target, RunPurgeExecutionState::Changed, None);
             }
             Ok(Some(current)) => current,
             Err(error) => {
@@ -770,10 +782,7 @@ impl RunPurgeExecutionService {
                 ),
                 Ok(Some(_)) => match self
                     .provider
-                    .delete_workflow_run_artifact(
-                        &planned_artifact.repository,
-                        planned_artifact.id,
-                    )
+                    .delete_workflow_run_artifact(&planned_artifact.repository, planned_artifact.id)
                     .await
                 {
                     Ok(DeleteOutcome::Deleted) => artifact_result(
@@ -854,9 +863,7 @@ impl RunPurgeExecutionService {
 
         let run = if !dependencies_clean {
             let error = if let Some(error) = dependency_verification_error {
-                format!(
-                    "workflow run retained because dependency verification failed: {error}"
-                )
+                format!("workflow run retained because dependency verification failed: {error}")
             } else if !residual_artifacts.is_empty() {
                 let ids = residual_artifacts
                     .iter()
@@ -998,12 +1005,7 @@ fn already_absent_execution_item(target: &RunPurgeTarget) -> RunPurgeExecutionIt
             .artifacts()
             .iter()
             .map(|artifact| {
-                artifact_result(
-                    artifact,
-                    RunPurgeExecutionState::AlreadyAbsent,
-                    None,
-                    None,
-                )
+                artifact_result(artifact, RunPurgeExecutionState::AlreadyAbsent, None, None)
             })
             .collect(),
         residual_artifacts: Vec::new(),
@@ -1045,7 +1047,9 @@ pub enum RunPurgeError {
         "cannot create a workflow-run purge plan from an incomplete snapshot ({issue_count} scan issue(s))"
     )]
     IncompleteSnapshot { issue_count: usize },
-    #[error("workflow-run purge plan schema version {found} is unsupported; supported version is {supported}")]
+    #[error(
+        "workflow-run purge plan schema version {found} is unsupported; supported version is {supported}"
+    )]
     UnsupportedPlanSchema { found: u32, supported: u32 },
     #[error("workflow-run purge plan summary does not match its immutable targets")]
     PlanSummaryMismatch,
@@ -1059,9 +1063,13 @@ pub enum RunPurgeError {
         run_id: u64,
         status: String,
     },
-    #[error("workflow run {repository}#{run_id} disappeared while its purge dependencies were being snapshotted")]
+    #[error(
+        "workflow run {repository}#{run_id} disappeared while its purge dependencies were being snapshotted"
+    )]
     RunDisappearedDuringPlanning { repository: String, run_id: u64 },
-    #[error("workflow run {repository}#{run_id} changed while its purge dependencies were being snapshotted")]
+    #[error(
+        "workflow run {repository}#{run_id} changed while its purge dependencies were being snapshotted"
+    )]
     RunChangedDuringPlanning { repository: String, run_id: u64 },
     #[error("failed to snapshot dependencies for workflow run {repository}#{run_id}: {message}")]
     DependencySnapshotFailed {
@@ -1075,7 +1083,9 @@ pub enum RunPurgeError {
         run_id: u64,
         artifact_id: u64,
     },
-    #[error("artifact {artifact_id} for {repository}#{run_id} reports workflow run {artifact_run_id}")]
+    #[error(
+        "artifact {artifact_id} for {repository}#{run_id} reports workflow run {artifact_run_id}"
+    )]
     ArtifactRunMismatch {
         repository: String,
         run_id: u64,
@@ -1204,8 +1214,17 @@ mod tests {
 
     #[async_trait]
     impl WorkflowRunProvider for FakeProvider {
-        async fn workflow_runs(&self, _repository: &Repository) -> ProviderResult<Vec<WorkflowRun>> {
-            Ok(self.current_run.lock().unwrap().clone().into_iter().collect())
+        async fn workflow_runs(
+            &self,
+            _repository: &Repository,
+        ) -> ProviderResult<Vec<WorkflowRun>> {
+            Ok(self
+                .current_run
+                .lock()
+                .unwrap()
+                .clone()
+                .into_iter()
+                .collect())
         }
 
         async fn workflow_run(
@@ -1375,11 +1394,7 @@ mod tests {
             .unwrap();
 
         let report = RunPurgeExecutionService::new(provider.clone())
-            .execute(
-                &plan,
-                &reviewed,
-                ExecutionAuthorization::automation_yes(),
-            )
+            .execute(&plan, &reviewed, ExecutionAuthorization::automation_yes())
             .await
             .unwrap();
 
