@@ -952,6 +952,41 @@ mod tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn deletes_run_logs_before_the_run_through_distinct_endpoints() {
+        let (base_url, requests, server) =
+            spawn_http_fixture(vec!["{}".to_owned(), "{}".to_owned()]);
+        let client =
+            GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+                .unwrap();
+        let repository = RepositoryRef {
+            id: 1,
+            full_name: "example-user/project-alpha".to_owned(),
+        };
+
+        let logs =
+            WorkflowRunPurgeProvider::delete_workflow_run_logs(&client, &repository, 7001)
+                .await
+                .unwrap();
+        let run = WorkflowRunPurgeProvider::delete_workflow_run(&client, &repository, 7001)
+            .await
+            .unwrap();
+        server.join().unwrap();
+
+        assert_eq!(logs, DeleteOutcome::Deleted);
+        assert_eq!(run, DeleteOutcome::Deleted);
+
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests,
+            vec![
+                "DELETE /repos/example-user/project-alpha/actions/runs/7001/logs HTTP/1.1",
+                "DELETE /repos/example-user/project-alpha/actions/runs/7001 HTTP/1.1",
+            ]
+        );
+    }
+
     #[test]
     fn token_debug_output_is_redacted() {
         let token = SecretToken("fictional-secret-token".to_owned());
