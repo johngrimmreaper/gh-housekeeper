@@ -8,7 +8,7 @@ use gh_housekeeper_core::{
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
     RunPurgeExecutionService, RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService,
-    RunPurgeRevalidationService, RunPurgeRevalidationState, RunPurgeSelection,
+    RunPurgeRevalidationService, RunPurgeSelection,
     RunPurgeSelectionMode, StorageBucket, StoragePressureLevel, WorkflowRun,
     WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
     format_bytes, matches_glob, monitoring_scheduler_cancellation, parse_duration,
@@ -2312,10 +2312,15 @@ fn write_json_atomic_new(path: &std::path::Path, value: &RunPurgePlan) -> Result
             Err(error) => return Err(error).context("failed to create temporary purge-plan file"),
         };
 
-        file.write_all(&bytes)
+        if let Err(error) = file
+            .write_all(&bytes)
             .and_then(|_| file.write_all(b"\n"))
             .and_then(|_| file.sync_all())
-            .context("failed to write temporary purge-plan file")?;
+        {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(error).context("failed to write temporary purge-plan file");
+        }
         drop(file);
 
         if path.exists() {
@@ -2326,12 +2331,15 @@ fn write_json_atomic_new(path: &std::path::Path, value: &RunPurgePlan) -> Result
             );
         }
 
-        fs::rename(&temporary, path).with_context(|| {
-            format!(
-                "failed to atomically commit purge-plan file {}",
-                path.display()
-            )
-        })?;
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to atomically commit purge-plan file {}",
+                    path.display()
+                )
+            });
+        }
         return Ok(());
     }
 
