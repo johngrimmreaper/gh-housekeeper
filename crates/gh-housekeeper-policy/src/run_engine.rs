@@ -158,9 +158,7 @@ impl PolicyEngine {
                     ProtectionReviewCode::RepositoryRenamed => {
                         ReasonCode::LocalProtectionRepositoryRenamed
                     }
-                    ProtectionReviewCode::Unverifiable => {
-                        ReasonCode::LocalProtectionUnverifiable
-                    }
+                    ProtectionReviewCode::Unverifiable => ReasonCode::LocalProtectionUnverifiable,
                 };
                 return run_decision(
                     run,
@@ -407,14 +405,18 @@ mod tests {
     fn active_runs_are_never_delete_candidates() {
         let report = PolicyEngine::new(PolicyConfig::default())
             .unwrap()
-            .classify_workflow_run_snapshot(&snapshot(vec![run(
-                1,
-                "example-user/project-alpha",
-                10,
-                "main",
-                "in_progress",
-                1,
-            )]), &ProtectionIndex::default(), "test://runs");
+            .classify_workflow_run_snapshot(
+                &snapshot(vec![run(
+                    1,
+                    "example-user/project-alpha",
+                    10,
+                    "main",
+                    "in_progress",
+                    1,
+                )]),
+                &ProtectionIndex::default(),
+                "test://runs",
+            );
 
         assert_eq!(report.decisions[0].decision, Decision::Keep);
         assert_eq!(
@@ -442,14 +444,18 @@ keep_days = 7
         .unwrap();
         let report = PolicyEngine::new(config)
             .unwrap()
-            .classify_workflow_run_snapshot(&snapshot(vec![run(
-                1,
-                "example-user/project-alpha",
-                10,
-                "main",
-                "completed",
-                20,
-            )]), &ProtectionIndex::default(), "test://runs");
+            .classify_workflow_run_snapshot(
+                &snapshot(vec![run(
+                    1,
+                    "example-user/project-alpha",
+                    10,
+                    "main",
+                    "completed",
+                    20,
+                )]),
+                &ProtectionIndex::default(),
+                "test://runs",
+            );
 
         assert_eq!(report.decisions[0].decision, Decision::Delete);
         assert_eq!(report.decisions[0].effective_keep_days, Some(7));
@@ -475,14 +481,18 @@ keep_latest = 2
 
         let report = PolicyEngine::new(config)
             .unwrap()
-            .classify_workflow_run_snapshot(&snapshot(vec![
-                run(1, "example-user/project-alpha", 10, "main", "completed", 1),
-                run(2, "example-user/project-alpha", 10, "main", "completed", 2),
-                run(3, "example-user/project-alpha", 10, "main", "completed", 3),
-                run(4, "example-user/project-beta", 10, "main", "completed", 1),
-                run(5, "example-user/project-beta", 10, "main", "completed", 2),
-                run(6, "example-user/project-beta", 10, "main", "completed", 3),
-            ]), &ProtectionIndex::default(), "test://runs");
+            .classify_workflow_run_snapshot(
+                &snapshot(vec![
+                    run(1, "example-user/project-alpha", 10, "main", "completed", 1),
+                    run(2, "example-user/project-alpha", 10, "main", "completed", 2),
+                    run(3, "example-user/project-alpha", 10, "main", "completed", 3),
+                    run(4, "example-user/project-beta", 10, "main", "completed", 1),
+                    run(5, "example-user/project-beta", 10, "main", "completed", 2),
+                    run(6, "example-user/project-beta", 10, "main", "completed", 3),
+                ]),
+                &ProtectionIndex::default(),
+                "test://runs",
+            );
 
         let kept = report.count(Decision::Keep);
         let deleted = report.count(Decision::Delete);
@@ -514,14 +524,18 @@ protect = true
         .unwrap();
         let report = PolicyEngine::new(config)
             .unwrap()
-            .classify_workflow_run_snapshot(&snapshot(vec![run(
-                1,
-                "example-user/project-alpha",
-                10,
-                "release-1",
-                "completed",
-                1,
-            )]), &ProtectionIndex::default(), "test://runs");
+            .classify_workflow_run_snapshot(
+                &snapshot(vec![run(
+                    1,
+                    "example-user/project-alpha",
+                    10,
+                    "release-1",
+                    "completed",
+                    1,
+                )]),
+                &ProtectionIndex::default(),
+                "test://runs",
+            );
 
         assert_eq!(report.decisions[0].decision, Decision::Protected);
     }
@@ -555,7 +569,10 @@ protect = true
             .unwrap()
             .classify_workflow_run_snapshot(&snapshot, &protections, "test://runs");
         assert_eq!(report.decisions[0].decision, Decision::Protected);
-        assert_eq!(report.decisions[0].reasons[0].code, ReasonCode::LocalProtection);
+        assert_eq!(
+            report.decisions[0].reasons[0].code,
+            ReasonCode::LocalProtection
+        );
         assert_eq!(report.delete_count(), 0);
     }
 }

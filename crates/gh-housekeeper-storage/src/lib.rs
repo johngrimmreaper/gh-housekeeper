@@ -2,8 +2,8 @@ mod audit;
 mod cache_purge_audit;
 mod config;
 mod monitoring_history;
-mod run_purge_audit;
 mod run_protections;
+mod run_purge_audit;
 
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
@@ -20,13 +20,13 @@ pub use monitoring_history::{
     MONITORING_SAMPLE_SCHEMA_VERSION, MonitoringBaselineLookup, MonitoringHistory,
     MonitoringHistoryError, MonitoringHistoryStore, MonitoringReadIssue, MonitoringSample,
 };
-pub use run_purge_audit::{
-    RUN_PURGE_AUDIT_SCHEMA_VERSION, RunPurgeAuditError, RunPurgeAuditHistory, RunPurgeAuditIntent,
-    RunPurgeAuditIntentReceipt, RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore,
-};
 pub use run_protections::{
     ProtectOutcome, RUN_PROTECTIONS_SCHEMA_VERSION, RunProtectionLease, RunProtectionStore,
     RunProtectionStoreError,
+};
+pub use run_purge_audit::{
+    RUN_PURGE_AUDIT_SCHEMA_VERSION, RunPurgeAuditError, RunPurgeAuditHistory, RunPurgeAuditIntent,
+    RunPurgeAuditIntentReceipt, RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore,
 };
 
 use std::{env, path::PathBuf};
