@@ -2270,14 +2270,9 @@ async fn run_purge_apply(
                 .items
                 .iter()
                 .filter(|item| {
-                    item.run
-                        .error
-                        .as_deref()
-                        .is_some_and(|error| {
-                            error.starts_with(
-                                "batch halted by GitHub API rate-limit guard",
-                            )
-                        })
+                    item.run.error.as_deref().is_some_and(|error| {
+                        error.starts_with("batch halted by GitHub API rate-limit guard")
+                    })
                 })
                 .count();
 
