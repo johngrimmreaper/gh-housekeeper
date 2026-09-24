@@ -147,7 +147,6 @@ impl ProtectionIndex {
                 entry.key.provider == key.provider
                     && entry.key.provider_instance == key.provider_instance
                     && entry.key.run_id == key.run_id
-                    && entry.repository.full_name == run.repository.full_name
             })
         });
 
@@ -297,6 +296,28 @@ mod tests {
         assert!(matches!(
             ProtectionIndex::new(vec![protection.clone(), protection]),
             Err(RunProtectionError::Duplicate(_))
+        ));
+    }
+
+    #[test]
+    fn a_protected_run_id_with_a_different_repository_needs_review() {
+        let protected = RunProtection::from_verified_run(
+            "https://api.github.com",
+            &account(),
+            &run(),
+            "Evidence".to_owned(),
+        )
+        .unwrap();
+        let index = ProtectionIndex::new(vec![protected]).unwrap();
+        let mut different_repository = run();
+        different_repository.repository.id = 99;
+        different_repository.repository.full_name = "other/project".to_owned();
+        assert!(matches!(
+            index.assess("https://api.github.com", &account(), &different_repository),
+            ProtectionAssessment::Review {
+                code: ProtectionReviewCode::IdentityMismatch,
+                ..
+            }
         ));
     }
 }

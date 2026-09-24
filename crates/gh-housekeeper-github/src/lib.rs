@@ -1055,6 +1055,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rejects_a_run_returned_with_another_repository_identity() {
+        let run = r#"{"id":7001,"name":"Rust CI","display_title":"first","event":"push","status":"completed","conclusion":"success","workflow_id":88,"head_branch":"main","head_sha":"abc","run_number":10,"run_attempt":1,"created_at":"2026-09-01T12:00:00Z","updated_at":"2026-09-01T12:05:00Z","repository":{"id":2,"full_name":"other/project"}}"#.to_owned();
+        let (base_url, requests, server) = spawn_http_fixture(vec![run]);
+        let client = GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
+            .unwrap();
+        let repository = RepositoryRef {
+            id: 1,
+            full_name: "example-user/project-alpha".to_owned(),
+        };
+
+        let result = WorkflowRunProvider::workflow_run(&client, &repository, 7001).await;
+        server.join().unwrap();
+        assert!(matches!(result, Err(ProviderError::InvalidResponse(_))));
+        assert_eq!(requests.try_iter().count(), 1);
+    }
+
+    #[tokio::test]
     async fn deletes_run_logs_before_the_run_through_distinct_endpoints() {
         let (base_url, requests, server) =
             spawn_http_fixture(vec!["{}".to_owned(), "{}".to_owned()]);
