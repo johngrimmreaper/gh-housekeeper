@@ -72,16 +72,25 @@ gh-housekeeper purge plan runs \\
   --run-id 123456 \\
   --output run-purge-plan.json
 
-# Explicit bulk mode: completed runs only; optional filters narrow the selection.
+# Explicit bulk mode for one repository: completed runs only; optional filters narrow the selection.
 gh-housekeeper purge plan runs \\
   --repo example-user/project-alpha \\
   --all-completed \\
   --older-than 30d \\
   --output run-purge-plan.json
 
+# Explicit account-wide mode: all completed runs across repositories owned by the authenticated account.
+# Omitting --repo/--owner is not enough; destructive planning requires this explicit flag.
+gh-housekeeper purge plan runs \\
+  --all-repositories \\
+  --all-completed \\
+  --output all-run-purge-plan.json
+
 gh-housekeeper purge revalidate run-purge-plan.json
 
-# Destructive: revalidates first, prints exact run/dependency targets, then requires typing "purge".
+# Destructive: revalidates first and prints the exact run/dependency targets.
+# A one-repository plan requires typing "purge".
+# A multi-repository plan requires the exact reviewed repository count, e.g. "purge 47 repositories".
 gh-housekeeper purge apply run-purge-plan.json
 
 # Explicit non-interactive authorization.
@@ -200,7 +209,7 @@ The project will never intentionally delete items while enumerating a shifting p
 
 `apply` is destructive. It reparses the immutable artifact plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
 
-`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs, revalidates the exact run and artifact dependency set before consent, requires lowercase `purge` or explicit `--yes`, and then persists an authorized write-ahead purge intent before the first DELETE. It deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate final purge audit before reporting successful completion. If no matching final record is available, `purge history` leaves the intent visibly pending rather than implying that nothing happened.
+`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs and revalidates the exact run and artifact dependency set before consent. A one-repository plan requires lowercase `purge`; a multi-repository plan binds interactive confirmation to the reviewed repository count (for example `purge 47 repositories`); explicit `--yes` remains the deliberate non-interactive automation path. It then persists an authorized write-ahead purge intent before the first DELETE. It deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate final purge audit before reporting successful completion. If no matching final record is available, `purge history` leaves the intent visibly pending rather than implying that nothing happened.
 
 See:
 
