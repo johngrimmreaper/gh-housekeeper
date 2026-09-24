@@ -191,6 +191,19 @@ The CLI exposes this boundary through `monitor account once` and `monitor accoun
 
 `evaluate_usage_quota` is intentionally narrower than a GitHub plan calculator. It accepts one `UsageAllowance` with explicit provenance, product, SKU, unit, quantity, and quantity basis. It matches exactly one corresponding usage row. Zero matches are unknown rather than assumed zero; multiple exact matches are ambiguous rather than silently summed; different SKUs are never combined by this primitive.
 
-The evaluator supports healthy/warning/critical percentage thresholds only after the allowance passes validation. Stale or unavailable observations cannot emit quota alerts. A warning/critical result carries a `UsageQuotaAlertKey` whose identity is billing owner + resource ID + billing period + threshold. This is the intended durable deduplication key for a later daemon/store layer.
+The evaluator supports healthy/warning/critical percentage thresholds only after the allowance passes validation. Stale or unavailable observations cannot emit quota alerts. A warning/critical result carries a `UsageQuotaAlertKey` whose identity is billing owner + resource ID + billing period + threshold.
 
 The current GitHub summary adapter is not treated as an authoritative source of the account's included Actions-minute allowance. GitHub reports SKU usage and billing discounts, but the allowance is not present in the summary payload and discount semantics are broader than plan-quota consumption. A future plan-wide Actions allowance adapter must either obtain a trustworthy provider-reported entitlement or require an explicitly labeled user configuration and a documented aggregation rule.
+
+
+### Account usage configuration and delivery receipts
+
+Application configuration is now schema version 2. The loader first reads the schema number explicitly: schema 1 is parsed with the legacy shape and upgraded in memory to schema 2 with an empty/default `account_usage` section; schema 2 is parsed directly; unknown schemas fail. Existing schema-1 files therefore remain readable without being rewritten as a side effect of loading them.
+
+`AccountUsageMonitoringConfig` carries polling cadence, maximum observation age, an optional complete warning/critical percentage pair, and zero or more exact allowance entries. A persisted allowance is always converted to `UsageAllowanceProvenance::UserConfigured`; there is no configuration spelling that can falsely label a local number as provider-reported. Duplicate billing-owner/resource identities are rejected case-insensitively.
+
+The explicit `monitor account once` command loads this configuration, filters allowances to the requested billing owner, evaluates them, and presents the results. It does not write notification-delivery state. This keeps an interactive/read-only query distinct from automatic daemon notification delivery.
+
+Delivery deduplication is a separate append-only store at `account-usage-alerts/v1/`. `UsageQuotaAlertStore` looks up the exact `UsageQuotaAlertKey` and distinguishes `Delivered`, `NotDelivered`, and `Unknown`. If unreadable receipt history means a key might already have been delivered, the store fails closed rather than recording a possibly duplicate delivery. A matching valid receipt remains authoritative for deduplication even if an unrelated receipt file is corrupt.
+
+The receipt API is deliberately named `record_delivery_if_new`: a receipt records a notification that has already been successfully delivered. It is neither authorization to send nor a cleanup authorization. The future daemon must perform dedup lookup before delivery and record the receipt only after its notification adapter reports success.

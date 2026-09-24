@@ -192,3 +192,10 @@ No included allowance is assumed from the authenticated account or a repository 
 The allowance evaluator is deliberately exact-SKU and exact-unit. It requires explicit allowance provenance and an explicit quantity basis. Missing matching usage is unknown, duplicate exact rows are ambiguous, and stale observations cannot create warning/critical alert keys. This prevents a generic billing row from silently becoming a plan-wide Actions-minute balance.
 
 GitHub billing discounts must not be interpreted as synonymous with included-plan consumption. Discounted Actions usage can have multiple causes, so gh-housekeeper does not derive the global plan allowance or remaining included minutes from discount fields alone. A later user-configured aggregation rule must be labeled as such and must not be presented as provider-reported truth.
+
+
+Delivery deduplication state is also observational and non-destructive. `account-usage-alerts/v1/` is separate from usage observations, artifact monitoring, run protections, and every execution-audit store. A quota alert receipt cannot create `ExecutionAuthorization` or select any cleanup target.
+
+The explicit CLI never records a delivery receipt merely because an evaluation is warning or critical. `record_delivery_if_new` is reserved for a notification adapter/daemon after successful delivery. If the receipt store cannot determine whether an otherwise unseen key has already been delivered because history is corrupt, it fails closed instead of risking duplicate automatic notification.
+
+Configuration schema 2 accepts only locally labeled `UserConfigured` allowance entries. Loading a schema-1 configuration supplies an empty account-usage configuration in memory and does not infer an allowance from the authenticated GitHub plan. A local configuration value must never be displayed as provider-reported entitlement.
