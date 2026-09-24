@@ -1,6 +1,7 @@
 use crate::{
-    Account, Artifact, ProviderResult, ProviderTelemetry, Repository, RepositoryProvider,
-    RepositoryRef, ResourceScan, ScanIssue, ScanOptions, ScanScope, scan_resources,
+    Account, Artifact, DeleteOutcome, ProviderResult, ProviderTelemetry, Repository,
+    RepositoryProvider, RepositoryRef, ResourceScan, ScanIssue, ScanOptions, ScanScope,
+    scan_resources,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -39,6 +40,22 @@ impl WorkflowRun {
     pub fn is_completed(&self) -> bool {
         self.status.eq_ignore_ascii_case("completed")
     }
+
+    pub fn has_same_purge_identity(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.repository == other.repository
+            && self.workflow_id == other.workflow_id
+            && self.workflow_name == other.workflow_name
+            && self.display_title == other.display_title
+            && self.event == other.event
+            && self.status == other.status
+            && self.conclusion == other.conclusion
+            && self.head_branch == other.head_branch
+            && self.head_sha == other.head_sha
+            && self.run_number == other.run_number
+            && self.run_attempt == other.run_attempt
+            && self.created_at == other.created_at
+    }
 }
 
 #[async_trait]
@@ -61,6 +78,38 @@ pub trait WorkflowRunProvider: RepositoryProvider {
         repository: &RepositoryRef,
         run_id: u64,
     ) -> ProviderResult<Vec<Artifact>>;
+}
+
+
+#[async_trait]
+pub trait WorkflowRunPurgeProvider: WorkflowRunProvider {
+    /// Look up one exact artifact dependency of a workflow run.
+    async fn workflow_run_artifact(
+        &self,
+        repository: &RepositoryRef,
+        artifact_id: u64,
+    ) -> ProviderResult<Option<Artifact>>;
+
+    /// Delete one exact snapshotted artifact dependency.
+    async fn delete_workflow_run_artifact(
+        &self,
+        repository: &RepositoryRef,
+        artifact_id: u64,
+    ) -> ProviderResult<DeleteOutcome>;
+
+    /// Delete all logs attached to one exact workflow run.
+    async fn delete_workflow_run_logs(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<DeleteOutcome>;
+
+    /// Delete one exact workflow run. This must be invoked only after dependency cleanup.
+    async fn delete_workflow_run(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<DeleteOutcome>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
