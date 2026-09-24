@@ -6,7 +6,7 @@ The project is designed around a shared domain model and application layer that 
 
 ## Current implementation
 
-The mature artifact housekeeping slice plus read-only cache inventory and policy-classification slices are implemented:
+The mature artifact housekeeping slice, read-only cache inventory/policy classification, and guarded workflow-run purge slice are implemented:
 
 - GitHub authentication prefers `gh auth token`, with `GITHUB_TOKEN` as a fallback;
 - authenticated-account detection;
@@ -14,7 +14,8 @@ The mature artifact housekeeping slice plus read-only cache inventory and policy
 - repository and owner scopes;
 - GitHub Actions artifact enumeration with pagination;
 - GitHub Actions cache enumeration with pagination through a separate strong cache domain type;
-- shared bounded repository/resource scanning used by artifact and cache inventory;
+- shared bounded repository/resource scanning used by artifact, cache, and workflow-run inventory;
+- GitHub Actions workflow-run inventory with pagination plus workflow/branch/event/status/conclusion/age filters;
 - cache storage totals plus cache key, Git ref, creation-age, last-accessed/unused filtering and sorting;
 - bounded repository scanning concurrency;
 - metadata-only inventory (artifact archives are not downloaded);
@@ -30,9 +31,12 @@ The mature artifact housekeeping slice plus read-only cache inventory and policy
 - explicit protection and `keep_latest` for both currently-supported policy resources;
 - immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
-- platform-aware local config/cache/state directory layout.
+- platform-aware local config/cache/state directory layout;
+- immutable workflow-run purge plans that snapshot exact completed runs plus their run-owned artifacts before mutation;
+- explicit run-log deletion followed by exact artifact deletion, residual-artifact verification, run deletion last, and post-delete run verification;
+- separate durable versioned workflow-run purge audit history preserving the complete planned run/artifact snapshots and per-step outcomes.
 
-Cache mutation is intentionally disabled in this checkpoint. Cache inventory and policy classification are implemented as read-only paths. Artifact immutable plans, revalidation, guarded deletion, and audit remain the destructive reference implementation; cache planning, revalidation, deletion, and audit have not been enabled yet. Workflow-run and workflow-run-log inventory are later multi-resource slices.
+Cache mutation is intentionally disabled in this checkpoint. Cache inventory and policy classification are implemented as read-only paths; cache planning, revalidation, deletion, and audit have not been enabled yet. Workflow-run purge is implemented separately from policy-driven retention: explicit `--run-id` or `--all-completed` selection exists, but workflow-run `keep_days`/`keep_latest` policy classification does not yet exist.
 
 Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
@@ -54,6 +58,37 @@ gh-housekeeper artifacts --sort size
 gh-housekeeper artifacts --older-than 30d
 
 gh-housekeeper artifacts --name 'output-*'
+
+# Read-only workflow-run inventory.
+gh-housekeeper runs
+gh-housekeeper runs --repo example-user/project-alpha
+gh-housekeeper runs --older-than 30d --completed-only
+gh-housekeeper runs --workflow 'Rust *' --branch 'work/*' --conclusion failure
+
+# Build an immutable workflow-run purge plan. This does not delete anything.
+gh-housekeeper purge plan runs \\
+  --repo example-user/project-alpha \\
+  --run-id 123456 \\
+  --output run-purge-plan.json
+
+# Explicit bulk mode: completed runs only; optional filters narrow the selection.
+gh-housekeeper purge plan runs \\
+  --repo example-user/project-alpha \\
+  --all-completed \\
+  --older-than 30d \\
+  --output run-purge-plan.json
+
+gh-housekeeper purge revalidate run-purge-plan.json
+
+# Destructive: revalidates first, prints exact run/dependency targets, then requires typing "purge".
+gh-housekeeper purge apply run-purge-plan.json
+
+# Explicit non-interactive authorization.
+gh-housekeeper purge apply run-purge-plan.json --yes
+
+# Read the separate local workflow-run purge audit history; no GitHub network access.
+gh-housekeeper purge history
+gh-housekeeper purge history --repo example-user/project-alpha
 
 # Read-only Actions cache inventory; this does not delete caches.
 gh-housekeeper caches
@@ -146,7 +181,7 @@ Tokens are never part of domain objects, JSON output, audit models, or debug for
 
 ## Safety model
 
-Destructive housekeeping is being implemented around a mandatory stable-plan flow:
+Destructive housekeeping uses mandatory stable-plan flows:
 
 ```text
 scan complete scope
@@ -161,7 +196,9 @@ scan complete scope
 
 The project will never intentionally delete items while enumerating a shifting paginated collection, and cached data will never be treated as sufficient authority for deletion.
 
-`apply` is destructive. It reparses the immutable plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
+`apply` is destructive. It reparses the immutable artifact plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
+
+`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs, revalidates the exact run and artifact dependency set before consent, requires lowercase `purge` or explicit `--yes`, deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate durable purge audit before reporting successful completion.
 
 See:
 
