@@ -545,7 +545,7 @@ impl RunPurgeRevalidationService {
                             current_run: Some(current_run),
                             error: Some(error.to_string()),
                         }
-                    },
+                    }
                 },
                 Err(error) => {
                     if matches!(&error, ProviderError::RateLimited { .. }) {
@@ -564,7 +564,7 @@ impl RunPurgeRevalidationService {
                         current_run: None,
                         error: Some(error.to_string()),
                     }
-                },
+                }
             };
             items.push(item);
         }
