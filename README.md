@@ -6,7 +6,7 @@ The project is designed around a shared domain model and application layer that 
 
 ## Current implementation
 
-The mature artifact housekeeping slice, read-only cache inventory/policy classification, and guarded workflow-run purge slice are implemented:
+The mature artifact housekeeping slice, cache inventory/policy classification and purge, workflow-run inventory/policy classification and guarded purge, plus scheduler-ready monitoring are implemented:
 
 - GitHub authentication prefers `gh auth token`, with `GITHUB_TOKEN` as a fallback;
 - authenticated-account detection;
@@ -27,8 +27,10 @@ The mature artifact housekeeping slice, read-only cache inventory/policy classif
 - a declarative, resource-aware TOML policy engine with explainable keep/delete/protected/manual-review decisions;
 - artifact rules with repository/workflow/artifact/branch selectors plus cache rules with repository/key/ref selectors;
 - cache retention based on creation age and optional last-accessed/unused age, with conservative all-criteria-expired deletion classification;
-- a read-only `classify caches` CLI path that evaluates the complete cache snapshot and never creates a cleanup plan or sends DELETE;
-- explicit protection and `keep_latest` for both currently-supported policy resources;
+- read-only `classify caches` and `classify runs` CLI paths that evaluate complete resource snapshots without mutation;
+- explicit protection and `keep_latest` for artifacts, caches, and workflow runs;
+- workflow-run policy selectors for repository, workflow, branch, event, and conclusion, with resource-specific `[defaults.runs]` retention;
+- policy-driven workflow-run purge planning: exact completed runs classified `Delete` feed the existing immutable dependency-aware run-purge pipeline;
 - immutable cleanup plans containing exact artifact snapshots and policy fingerprints;
 - a dry-run `plan` CLI command that refuses incomplete inventory snapshots;
 - platform-aware local config/cache/state directory layout;
@@ -37,7 +39,9 @@ The mature artifact housekeeping slice, read-only cache inventory/policy classif
 - separate durable versioned workflow-run purge audit history preserving the complete planned run/artifact snapshots and per-step outcomes;
 - a write-ahead authorized purge-intent record persisted before the first remote mutation, with unresolved intents surfaced by `purge history` after crashes or incomplete executions.
 
-Cache mutation is intentionally disabled in this checkpoint. Cache inventory and policy classification are implemented as read-only paths; cache planning, revalidation, deletion, and audit have not been enabled yet. Workflow-run purge is implemented separately from policy-driven retention: explicit `--run-id` or `--all-completed` selection exists, but workflow-run `keep_days`/`keep_latest` policy classification does not yet exist.
+Actions-cache mutation is implemented through a distinct exact-ID purge capability: immutable cache plan, remote revalidation, explicit authorization, write-ahead intent, paced deletion, post-delete absence verification, and separate durable audit. Release assets, packages, and ordinary workflow artifacts are not reachable through the cache-purge capability.
+
+Workflow-run retention is policy-driven as well as explicitly selectable. `classify runs` is read-only; `purge plan runs --policy PATH` selects only completed runs classified `Delete`, records the policy fingerprint, and feeds those exact runs into the same dependency-aware run-purge machinery used by `--run-id` and `--all-completed`. Active runs are never policy deletion candidates. `keep_latest` is evaluated per repository/workflow/branch family so broad owner rules do not accidentally keep only a handful of runs globally.
 
 Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration and read-only storage-pressure status are also implemented as the foundation for a future scheduler/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
 
@@ -113,6 +117,18 @@ gh-housekeeper classify caches
 gh-housekeeper classify caches --repo example-user/project-alpha
 gh-housekeeper classify caches --policy ~/.config/gh-housekeeper/policy.toml --explain
 gh-housekeeper classify caches --format json
+
+# Read-only workflow-run policy classification.
+gh-housekeeper classify runs
+gh-housekeeper classify runs --repo example-user/project-alpha
+gh-housekeeper classify runs --policy ~/.config/gh-housekeeper/policy.toml --explain
+
+# Policy-driven run purge planning; still read-only.
+gh-housekeeper purge plan runs \
+  --all-repositories \
+  --policy ~/.config/gh-housekeeper/policy.toml \
+  --output policy-run-purge-plan.json
+
 
 gh-housekeeper stats --group-by repo
 
@@ -269,3 +285,5 @@ Foreground monitoring is restart-aware. Before starting the scheduler, `monitor 
 The shared transition evaluator compares only compatible monitoring series. Provider/account and scan scope must match, and repository exclusions are part of scope compatibility. Partial scans containing `ScanIssue` do not produce pressure transitions. A changed threshold is recorded explicitly on a transition so downstream notification code can distinguish configuration-driven changes.
 
 Core also derives provider-neutral notification signals from monitoring events: `no_notification`, `entered_warning`, `entered_critical`, `recovered_to_warning`, `recovered_to_healthy`, `monitoring_incomplete`, and `monitoring_failure`. These are domain signals only; no OS desktop-notification backend or tray integration is implied yet. JSON watch output includes the structured signal, and table output includes its stable label.
+
+The next presentation/runtime layer is a small headless daemon/agent that owns scheduling while CLI and GUI remain first-class clients of the same Rust core. The intended lifecycle, IPC boundary, notification adapters, service/autostart modes, and safety requirements are documented in `docs/DAEMON.md`. The GUI must not shell out to the CLI, and the daemon must not bypass immutable plan/revalidation/audit for automated deletion.
