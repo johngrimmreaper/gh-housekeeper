@@ -2252,9 +2252,7 @@ fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
     let pending_intents = history
         .pending_intents()
         .into_iter()
-        .filter(|intent| {
-            run_purge_intent_matches_repository(intent, command.repository.as_deref())
-        })
+        .filter(|intent| run_purge_intent_matches_repository(intent, command.repository.as_deref()))
         .collect::<Vec<_>>();
 
     match command.format {
