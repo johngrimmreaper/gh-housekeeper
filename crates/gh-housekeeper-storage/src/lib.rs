@@ -1,10 +1,16 @@
 mod audit;
+mod cache_purge_audit;
 mod config;
 mod monitoring_history;
 mod run_purge_audit;
 
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
+};
+pub use cache_purge_audit::{
+    CACHE_PURGE_AUDIT_SCHEMA_VERSION, CachePurgeAuditError, CachePurgeAuditHistory,
+    CachePurgeAuditIntent, CachePurgeAuditIntentReceipt, CachePurgeAuditReadIssue,
+    CachePurgeAuditRecord, CachePurgeAuditStore,
 };
 pub use config::{
     AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
