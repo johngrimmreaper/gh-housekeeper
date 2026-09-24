@@ -1424,7 +1424,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn residual_artifact_after_delete_blocks_final_run_deletion() {
         let planned_run = run(7);
