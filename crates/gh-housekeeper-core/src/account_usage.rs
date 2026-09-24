@@ -152,7 +152,7 @@ impl AccountUsageObservation {
     }
 
     pub fn is_available(&self) -> bool {
-        matches!(self.availability, AccountUsageAvailability::Available)
+        matches!(&self.availability, AccountUsageAvailability::Available)
     }
 }
 

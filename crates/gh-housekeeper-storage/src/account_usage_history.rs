@@ -399,7 +399,7 @@ mod tests {
 
         assert!(history.samples[0].observation.items.is_empty());
         assert!(matches!(
-            history.samples[0].observation.availability,
+            &history.samples[0].observation.availability,
             AccountUsageAvailability::Unknown {
                 reason: AccountUsageUnknownReason::PermissionDenied,
                 ..
