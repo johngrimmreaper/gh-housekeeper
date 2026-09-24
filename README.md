@@ -34,7 +34,8 @@ The mature artifact housekeeping slice, read-only cache inventory/policy classif
 - platform-aware local config/cache/state directory layout;
 - immutable workflow-run purge plans that snapshot exact completed runs plus their run-owned artifacts before mutation;
 - explicit run-log deletion followed by exact artifact deletion, residual-artifact verification, run deletion last, and post-delete run verification;
-- separate durable versioned workflow-run purge audit history preserving the complete planned run/artifact snapshots and per-step outcomes.
+- separate durable versioned workflow-run purge audit history preserving the complete planned run/artifact snapshots and per-step outcomes;
+- a write-ahead authorized purge-intent record persisted before the first remote mutation, with unresolved intents surfaced by `purge history` after crashes or incomplete executions.
 
 Cache mutation is intentionally disabled in this checkpoint. Cache inventory and policy classification are implemented as read-only paths; cache planning, revalidation, deletion, and audit have not been enabled yet. Workflow-run purge is implemented separately from policy-driven retention: explicit `--run-id` or `--all-completed` selection exists, but workflow-run `keep_days`/`keep_latest` policy classification does not yet exist.
 
@@ -87,6 +88,7 @@ gh-housekeeper purge apply run-purge-plan.json
 gh-housekeeper purge apply run-purge-plan.json --yes
 
 # Read the separate local workflow-run purge audit history; no GitHub network access.
+# Pending authorized intents are shown explicitly and mean remote state must be inspected before retrying.
 gh-housekeeper purge history
 gh-housekeeper purge history --repo example-user/project-alpha
 
@@ -198,7 +200,7 @@ The project will never intentionally delete items while enumerating a shifting p
 
 `apply` is destructive. It reparses the immutable artifact plan, performs remote revalidation before consent, refuses unsafe reports, requires either an interactive terminal confirmation matching lowercase `delete` or an explicit `--yes`, performs another just-in-time exact lookup before each DELETE, and persists the resulting `ExecutionReport` before reporting successful command completion. Zero-target plans return without prompting or mutating.
 
-`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs, revalidates the exact run and artifact dependency set before consent, requires lowercase `purge` or explicit `--yes`, deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate durable purge audit before reporting successful completion.
+`purge apply` is the stronger workflow-run destructive path. It accepts only immutable run-purge plans containing completed runs, revalidates the exact run and artifact dependency set before consent, requires lowercase `purge` or explicit `--yes`, and then persists an authorized write-ahead purge intent before the first DELETE. It deletes run logs first, deletes each unchanged snapshotted artifact, re-enumerates the run artifacts and refuses to delete the run while any residual artifact remains, deletes the exact run last, verifies that the run disappeared, and persists a separate final purge audit before reporting successful completion. If no matching final record is available, `purge history` leaves the intent visibly pending rather than implying that nothing happened.
 
 See:
 
