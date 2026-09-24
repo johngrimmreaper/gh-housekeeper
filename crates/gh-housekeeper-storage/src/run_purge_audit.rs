@@ -296,10 +296,14 @@ mod tests {
                 provider: "github".to_owned(),
                 login: "example-user".to_owned(),
             },
+            plan_schema_version: gh_housekeeper_core::RUN_PURGE_PLAN_SCHEMA_VERSION,
             plan_created_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 30, 0)
                 .unwrap(),
             plan_scanned_at: chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 2, 1, 0, 0, 0)
                 .unwrap(),
+            scope: gh_housekeeper_core::ScanScope::Repository(
+                "example-user/project-alpha".to_owned(),
+            ),
             selection: RunPurgeSelection {
                 mode: RunPurgeSelectionMode::AllCompleted,
                 requested_run_ids: Vec::new(),
