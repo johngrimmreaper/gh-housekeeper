@@ -668,8 +668,22 @@ impl RunPurgeExecutionService {
 
         let started_at = Utc::now();
         let mut items = Vec::with_capacity(plan.targets().len());
+        let mut rate_limit_halted = false;
         for target in plan.targets() {
-            items.push(self.execute_target(target).await);
+            if rate_limit_halted {
+                items.push(blocked_execution_item(
+                    target,
+                    RunPurgeExecutionState::Blocked,
+                    Some(
+                        "batch halted after provider rate limit; target was not attempted".to_owned(),
+                    ),
+                ));
+                continue;
+            }
+
+            let item = self.execute_target(target).await;
+            rate_limit_halted = execution_item_hit_rate_limit(&item);
+            items.push(item);
         }
 
         Ok(RunPurgeExecutionReport {
@@ -981,6 +995,28 @@ fn ensure_same_account(expected: &Account, current: &Account) -> Result<(), RunP
 
 fn step(state: RunPurgeExecutionState, error: Option<String>) -> RunPurgeStepResult {
     RunPurgeStepResult { state, error }
+}
+
+fn execution_item_hit_rate_limit(item: &RunPurgeExecutionItem) -> bool {
+    item.logs
+        .error
+        .as_deref()
+        .is_some_and(is_provider_rate_limit_error)
+        || item
+            .run
+            .error
+            .as_deref()
+            .is_some_and(is_provider_rate_limit_error)
+        || item.artifacts.iter().any(|artifact| {
+            artifact
+                .error
+                .as_deref()
+                .is_some_and(is_provider_rate_limit_error)
+        })
+}
+
+fn is_provider_rate_limit_error(error: &str) -> bool {
+    error.starts_with("provider rate limit reached")
 }
 
 fn artifact_result(
