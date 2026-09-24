@@ -1,4 +1,5 @@
 mod account_usage;
+mod allowance;
 mod agent;
 mod cache;
 mod cache_purge;
@@ -14,6 +15,11 @@ pub use account_usage::{
     AccountUsageAvailability, AccountUsageItem, AccountUsageObservation, AccountUsageProvider,
     AccountUsageSource, AccountUsageUnknownReason, BillingOwner, BillingOwnerKind, BillingPeriod,
     BillingPeriodError,
+};
+pub use allowance::{
+    UsageAllowance, UsageAllowanceError, UsageAllowanceProvenance, UsagePercentageThresholds,
+    UsageQuantityBasis, UsageQuotaAlertKey, UsageQuotaEvaluation, UsageQuotaLevel,
+    UsageQuotaStatus, UsageQuotaThreshold, UsageQuotaUnknownReason, evaluate_usage_quota,
 };
 pub use agent::{
     DAEMON_PROTOCOL_SCHEMA_VERSION, DaemonCapabilities, DaemonCommand, DaemonEvent,
