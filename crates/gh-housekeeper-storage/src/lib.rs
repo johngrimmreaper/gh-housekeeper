@@ -1,3 +1,4 @@
+mod account_usage_history;
 mod audit;
 mod cache_purge_audit;
 mod config;
@@ -5,6 +6,10 @@ mod monitoring_history;
 mod run_protections;
 mod run_purge_audit;
 
+pub use account_usage_history::{
+    ACCOUNT_USAGE_SAMPLE_SCHEMA_VERSION, AccountUsageHistory, AccountUsageHistoryError,
+    AccountUsageHistoryStore, AccountUsageReadIssue, AccountUsageSample,
+};
 pub use audit::{
     AUDIT_SCHEMA_VERSION, AuditError, AuditHistory, AuditReadIssue, AuditRecord, AuditStore,
 };
