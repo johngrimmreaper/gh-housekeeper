@@ -7,15 +7,18 @@ use gh_housekeeper_core::{
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, RevalidationService, RevalidationState, ScanOptions, ScanScope,
-    StorageBucket, StoragePressureLevel, WorkflowRun, WorkflowRunInventoryService,
-    WorkflowRunProvider, aggregate_caches, format_bytes, matches_glob,
-    monitoring_scheduler_cancellation, parse_duration,
+    RunPurgeExecutionService, RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService,
+    RunPurgeRevalidationService, RunPurgeRevalidationState, RunPurgeSelection,
+    RunPurgeSelectionMode, StorageBucket, StoragePressureLevel, WorkflowRun,
+    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
+    format_bytes, matches_glob, monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
     AppConfig, AuditReadIssue, AuditRecord, AuditStore, ConfigStore, MonitoringConfig,
-    MonitoringHistoryStore, MonitoringReadIssue, StatePaths,
+    MonitoringHistoryStore, MonitoringReadIssue, RunPurgeAuditReadIssue, RunPurgeAuditRecord,
+    RunPurgeAuditStore, StatePaths,
 };
 use serde_json::json;
 use std::{
@@ -65,6 +68,8 @@ enum Command {
     Revalidate(RevalidateCommand),
     /// Apply an immutable cleanup plan through guarded revalidation, deletion, and audit.
     Apply(ApplyCommand),
+    /// Purge completed workflow runs with explicit dependency cleanup and durable audit.
+    Purge(PurgeCommand),
     /// Read durable local execution history without contacting GitHub.
     History(HistoryCommand),
     /// Inspect or initialize persistent local configuration.
@@ -383,6 +388,140 @@ struct ApplyCommand {
     format: OutputFormat,
 }
 
+
+#[derive(Args)]
+struct PurgeCommand {
+    #[command(subcommand)]
+    action: PurgeAction,
+}
+
+#[derive(Subcommand)]
+enum PurgeAction {
+    /// Build an immutable purge plan without deleting anything.
+    Plan(PurgePlanCommand),
+    /// Revalidate an immutable workflow-run purge plan without deleting anything.
+    Revalidate(PurgeRevalidateCommand),
+    /// Apply an immutable workflow-run purge plan through guarded dependency cleanup.
+    Apply(PurgeApplyCommand),
+    /// Read durable local workflow-run purge history without contacting GitHub.
+    History(PurgeHistoryCommand),
+}
+
+#[derive(Args)]
+struct PurgePlanCommand {
+    #[command(subcommand)]
+    resource: PurgePlanResource,
+}
+
+#[derive(Subcommand)]
+enum PurgePlanResource {
+    /// Plan a thorough purge of completed workflow runs, including logs and artifacts.
+    Runs(PurgeRunsPlanCommand),
+}
+
+#[derive(Args)]
+struct PurgeRunsPlanCommand {
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[arg(
+        long = "run-id",
+        value_name = "ID",
+        conflicts_with = "all_completed",
+        help = "Exact completed workflow-run ID to purge; may be repeated"
+    )]
+    run_ids: Vec<u64>,
+
+    #[arg(
+        long,
+        conflicts_with = "run_ids",
+        help = "Explicitly select all completed runs in scope, optionally narrowed by filters"
+    )]
+    all_completed: bool,
+
+    #[arg(
+        long,
+        requires = "all_completed",
+        help = "For --all-completed, only select runs at least this old, for example 30d"
+    )]
+    older_than: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_completed",
+        help = "For --all-completed, workflow name glob such as 'Rust *'"
+    )]
+    workflow: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_completed",
+        help = "For --all-completed, branch glob such as 'work/*'"
+    )]
+    branch: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_completed",
+        help = "For --all-completed, only runs triggered by this event"
+    )]
+    event: Option<String>,
+
+    #[arg(
+        long,
+        requires = "all_completed",
+        help = "For --all-completed, only runs with this conclusion"
+    )]
+    conclusion: Option<String>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Write the immutable purge-plan JSON to this new file"
+    )]
+    output: PathBuf,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct PurgeRevalidateCommand {
+    #[arg(value_name = "PLAN", help = "Path to an immutable workflow-run purge-plan JSON file")]
+    plan: PathBuf,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct PurgeApplyCommand {
+    #[arg(value_name = "PLAN", help = "Path to an immutable workflow-run purge-plan JSON file")]
+    plan: PathBuf,
+
+    #[arg(
+        long,
+        help = "Explicitly authorize non-interactive purge automation; bypasses the terminal prompt"
+    )]
+    yes: bool,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct PurgeHistoryCommand {
+    #[arg(
+        long = "repo",
+        value_name = "OWNER/REPO",
+        help = "Show purge executions that touched this repository"
+    )]
+    repository: Option<String>,
+
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
 #[derive(Args)]
 struct HistoryCommand {
     #[arg(
@@ -512,6 +651,14 @@ async fn main() -> Result<()> {
         Command::Plan(command) => run_plan(provider()?, command).await,
         Command::Revalidate(command) => run_revalidate(provider()?, command).await,
         Command::Apply(command) => run_apply(provider()?, command).await,
+        Command::Purge(command) => match command.action {
+            PurgeAction::Plan(command) => match command.resource {
+                PurgePlanResource::Runs(command) => run_purge_plan_runs(provider()?, command).await,
+            },
+            PurgeAction::Revalidate(command) => run_purge_revalidate(provider()?, command).await,
+            PurgeAction::Apply(command) => run_purge_apply(provider()?, command).await,
+            PurgeAction::History(command) => run_purge_history(command),
+        },
         Command::History(command) => run_history(command),
         Command::Config(command) => run_config(command),
         Command::Status(command) => run_status(provider()?, command).await,
@@ -1707,6 +1854,589 @@ async fn run_stats(provider: Arc<dyn ArtifactProvider>, command: StatsCommand) -
     }
     Ok(())
 }
+
+
+async fn run_purge_plan_runs(
+    provider: Arc<dyn WorkflowRunPurgeProvider>,
+    command: PurgeRunsPlanCommand,
+) -> Result<()> {
+    if command.run_ids.is_empty() == !command.all_completed {
+        anyhow::bail!(
+            "choose exactly one workflow-run purge selection mode: repeat --run-id ID, or pass --all-completed"
+        );
+    }
+
+    let older_than = command
+        .older_than
+        .as_deref()
+        .map(parse_duration)
+        .transpose()
+        .context("invalid --older-than duration")?;
+    if let Some(pattern) = command.workflow.as_deref() {
+        matches_glob(pattern, "")
+            .with_context(|| format!("invalid workflow name glob: {pattern}"))?;
+    }
+    if let Some(pattern) = command.branch.as_deref() {
+        matches_glob(pattern, "").with_context(|| format!("invalid branch glob: {pattern}"))?;
+    }
+
+    let snapshot = WorkflowRunInventoryService::new(provider.clone())
+        .scan(command.scope.scan_options())
+        .await?;
+
+    if !snapshot.issues.is_empty() {
+        print_scan_issues(&snapshot.issues);
+        anyhow::bail!(
+            "refusing to plan workflow-run purge from an incomplete inventory snapshot"
+        );
+    }
+
+    let now = Utc::now();
+    let (selected_runs, selection) = if command.all_completed {
+        let selected = snapshot
+            .runs
+            .iter()
+            .filter(|run| run.is_completed())
+            .filter(|run| {
+                older_than
+                    .map(|duration| run.older_than(now, duration))
+                    .unwrap_or(true)
+            })
+            .filter(|run| {
+                command
+                    .workflow
+                    .as_deref()
+                    .map(|pattern| {
+                        run.workflow_name
+                            .as_deref()
+                            .map(|name| matches_glob(pattern, name).unwrap_or(false))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true)
+            })
+            .filter(|run| {
+                command
+                    .branch
+                    .as_deref()
+                    .map(|pattern| {
+                        run.head_branch
+                            .as_deref()
+                            .map(|branch| matches_glob(pattern, branch).unwrap_or(false))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true)
+            })
+            .filter(|run| {
+                command
+                    .event
+                    .as_deref()
+                    .map(|event| run.event.eq_ignore_ascii_case(event))
+                    .unwrap_or(true)
+            })
+            .filter(|run| {
+                command
+                    .conclusion
+                    .as_deref()
+                    .map(|conclusion| {
+                        run.conclusion
+                            .as_deref()
+                            .map(|value| value.eq_ignore_ascii_case(conclusion))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        (
+            selected,
+            RunPurgeSelection {
+                mode: RunPurgeSelectionMode::AllCompleted,
+                requested_run_ids: Vec::new(),
+                older_than_seconds: older_than.map(|duration| duration.as_secs()),
+                workflow: command.workflow.clone(),
+                branch: command.branch.clone(),
+                event: command.event.clone(),
+                conclusion: command.conclusion.clone(),
+            },
+        )
+    } else {
+        let mut requested = command.run_ids.clone();
+        requested.sort_unstable();
+        requested.dedup();
+
+        let mut selected = Vec::with_capacity(requested.len());
+        let mut missing = Vec::new();
+        for run_id in &requested {
+            match snapshot.runs.iter().find(|run| run.id == *run_id) {
+                Some(run) if run.is_completed() => selected.push(run.clone()),
+                Some(run) => anyhow::bail!(
+                    "workflow run {} in {} is not completed (status {}); no purge plan was created",
+                    run.id,
+                    run.repository.full_name,
+                    run.status
+                ),
+                None => missing.push(*run_id),
+            }
+        }
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "workflow-run ID(s) not present in the complete selected scope: {:?}",
+                missing
+            );
+        }
+
+        (
+            selected,
+            RunPurgeSelection {
+                mode: RunPurgeSelectionMode::ExplicitRunIds,
+                requested_run_ids: requested,
+                older_than_seconds: None,
+                workflow: None,
+                branch: None,
+                event: None,
+                conclusion: None,
+            },
+        )
+    };
+
+    let plan = RunPurgePlanningService::new(provider)
+        .build(&snapshot, selected_runs, selection)
+        .await
+        .context("failed to build immutable workflow-run purge plan")?;
+
+    write_json_atomic_new(&command.output, &plan)
+        .with_context(|| format!("failed to persist purge plan {}", command.output.display()))?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&plan)?),
+        OutputFormat::Table => {
+            println!("Purge plan:           {}", command.output.display());
+            println!("Plan schema:          {}", plan.schema_version());
+            println!("Runs:                 {}", plan.summary().run_count());
+            println!("Artifacts:            {}", plan.summary().artifact_count());
+            println!(
+                "Artifact storage:      {}",
+                format_bytes(plan.summary().artifact_bytes())
+            );
+
+            if plan.targets().is_empty() {
+                println!();
+                println!("No completed workflow runs matched the explicit purge selection.");
+            } else {
+                println!();
+                println!(
+                    "{:<14} {:<40} {:<28} {:>7} {:>10} {:>14} BRANCH",
+                    "RUN ID", "REPOSITORY", "WORKFLOW", "RUN", "ARTIFACTS", "ARTIFACT BYTES"
+                );
+                for target in plan.targets() {
+                    let run = target.run();
+                    let bytes = target
+                        .artifacts()
+                        .iter()
+                        .fold(0_u64, |total, artifact| total.saturating_add(artifact.size_in_bytes));
+                    println!(
+                        "{:<14} {:<40} {:<28} {:>7} {:>10} {:>14} {}",
+                        run.id,
+                        run.repository.full_name,
+                        run.workflow_name.as_deref().unwrap_or("<unknown>"),
+                        format!("#{}.{}", run.run_number, run.run_attempt),
+                        target.artifacts().len(),
+                        format_bytes(bytes),
+                        run.head_branch.as_deref().unwrap_or("<unknown>")
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_purge_revalidate(
+    provider: Arc<dyn WorkflowRunProvider>,
+    command: PurgeRevalidateCommand,
+) -> Result<()> {
+    let plan = read_run_purge_plan(&command.plan)?;
+    let report = RunPurgeRevalidationService::new(provider)
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate workflow-run purge plan")?;
+
+    match command.format {
+        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
+        OutputFormat::Table => {
+            println!("Plan:                 {}", command.plan.display());
+            println!("Targets checked:      {}", report.items.len());
+            println!(
+                "Safe to apply:        {}",
+                if report.is_safe_to_apply() { "yes" } else { "no" }
+            );
+            if !report.items.is_empty() {
+                println!();
+                println!(
+                    "{:<14} {:<40} {:<22} {:>9} {:>9} {:>10}",
+                    "RUN ID", "REPOSITORY", "STATE", "MISSING", "CHANGED", "UNEXPECTED"
+                );
+                for item in &report.items {
+                    println!(
+                        "{:<14} {:<40} {:<22} {:>9} {:>9} {:>10}",
+                        item.run_id,
+                        item.repository,
+                        format!("{:?}", item.state).to_lowercase(),
+                        item.missing_artifact_ids.len(),
+                        item.changed_artifact_ids.len(),
+                        item.unexpected_artifact_ids.len()
+                    );
+                    if let Some(error) = &item.error {
+                        println!("  -> {error}");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_purge_apply(
+    provider: Arc<dyn WorkflowRunPurgeProvider>,
+    command: PurgeApplyCommand,
+) -> Result<()> {
+    let plan = read_run_purge_plan(&command.plan)?;
+    let reviewed = RunPurgeRevalidationService::new(provider.clone())
+        .revalidate(&plan)
+        .await
+        .context("failed to revalidate workflow-run purge plan")?;
+
+    if !reviewed.is_safe_to_apply() {
+        anyhow::bail!(
+            "workflow-run purge plan is not safe to apply; no deletion was attempted"
+        );
+    }
+
+    if plan.targets().is_empty() {
+        match command.format {
+            OutputFormat::Json => println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "plan": command.plan,
+                    "runs": 0,
+                    "audit_record": null,
+                    "message": "purge plan contains no workflow-run targets"
+                }))?
+            ),
+            OutputFormat::Table => {
+                println!("Plan:                 {}", command.plan.display());
+                println!("Runs:                 0");
+                println!("No workflow-run targets; nothing to purge.");
+            }
+        }
+        return Ok(());
+    }
+
+    print_run_purge_review(
+        &command.plan,
+        &plan,
+        &reviewed,
+        matches!(command.format, OutputFormat::Json),
+    );
+
+    let authorization = if command.yes {
+        ExecutionAuthorization::automation_yes()
+    } else {
+        if !io::stdin().is_terminal() {
+            anyhow::bail!(
+                "refusing destructive purge without an interactive terminal; rerun interactively or pass --yes explicitly"
+            );
+        }
+
+        eprint!("Type 'purge' to remove the reviewed logs, artifacts, and workflow runs: ");
+        io::stderr()
+            .flush()
+            .context("failed to flush purge confirmation prompt")?;
+        let mut response = String::new();
+        io::stdin()
+            .read_line(&mut response)
+            .context("failed to read purge confirmation")?;
+        authorize_run_purge(false, true, Some(&response))?
+    };
+
+    let execution = RunPurgeExecutionService::new(provider)
+        .execute(&plan, &reviewed, authorization)
+        .await
+        .context(
+            "guarded workflow-run purge failed before a complete execution report was produced",
+        )?;
+
+    let paths = StatePaths::discover().context(
+        "remote purge execution completed, but the local state directory could not be determined; inspect remote state and do not blindly retry",
+    )?;
+    let audit_store = RunPurgeAuditStore::from_paths(&paths);
+    let audit_path = audit_store.append(&execution).context(
+        "remote purge execution completed, but purge audit persistence failed; inspect remote state and do not blindly retry",
+    )?;
+
+    match command.format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "execution": execution,
+                "audit_record": audit_path
+            }))?
+        ),
+        OutputFormat::Table => {
+            let logs_deleted = execution
+                .items
+                .iter()
+                .filter(|item| item.logs.state == RunPurgeExecutionState::Deleted)
+                .count();
+            let artifacts_deleted = execution
+                .items
+                .iter()
+                .flat_map(|item| item.artifacts.iter())
+                .filter(|artifact| artifact.state == RunPurgeExecutionState::Deleted)
+                .count();
+
+            println!();
+            println!("Workflow-run purge complete");
+            println!("Runs reviewed:         {}", execution.run_count());
+            println!("Runs deleted:          {}", execution.deleted_run_count());
+            println!("Run logs deleted:      {logs_deleted}");
+            println!("Artifacts deleted:     {artifacts_deleted}");
+            println!(
+                "Artifact bytes removed: {}",
+                format_bytes(execution.reclaimed_artifact_bytes())
+            );
+            println!("Audit record:          {}", audit_path.display());
+
+            if !execution.is_complete_success() {
+                println!();
+                println!(
+                    "Purge completed with blocked or failed step(s); inspect the audit record before retrying anything."
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn run_purge_history(command: PurgeHistoryCommand) -> Result<()> {
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let history = RunPurgeAuditStore::from_paths(&paths)
+        .read_all()
+        .context("failed to read workflow-run purge audit history")?;
+
+    let records = history
+        .records
+        .iter()
+        .filter(|record| run_purge_history_matches_repository(record, command.repository.as_deref()))
+        .collect::<Vec<_>>();
+
+    match command.format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "records": records,
+                "issues": history.issues.iter().map(run_purge_audit_issue_json).collect::<Vec<_>>()
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!("Workflow-run purge history");
+            println!("Records:               {}", records.len());
+            println!();
+            println!(
+                "{:<20} {:<18} {:>8} {:>10} {:>14} AUTHORIZATION",
+                "RECORDED", "ACCOUNT", "RUNS", "DELETED", "ARTIFACT BYTES"
+            );
+            for record in records {
+                println!(
+                    "{:<20} {:<18} {:>8} {:>10} {:>14} {}",
+                    record.recorded_at.format("%Y-%m-%d %H:%M:%S"),
+                    record.execution.account.login,
+                    record.execution.run_count(),
+                    record.execution.deleted_run_count(),
+                    format_bytes(record.execution.reclaimed_artifact_bytes()),
+                    format_authorization(record.execution.authorization)
+                );
+            }
+            print_run_purge_audit_issues(&history.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn read_run_purge_plan(path: &std::path::Path) -> Result<RunPurgePlan> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read workflow-run purge plan {}", path.display()))?;
+    let plan: RunPurgePlan = serde_json::from_str(&input)
+        .with_context(|| format!("invalid workflow-run purge plan JSON {}", path.display()))?;
+    plan.validate_integrity()
+        .context("workflow-run purge plan failed integrity validation")?;
+    Ok(plan)
+}
+
+fn write_json_atomic_new<T: serde::Serialize>(path: &std::path::Path, value: &T) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "refusing to overwrite existing purge-plan file {}",
+            path.display()
+        );
+    }
+
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create plan directory {}", parent.display()))?;
+    }
+
+    let directory = parent.unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("purge-plan output path must have a UTF-8 file name")?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let pid = std::process::id();
+
+    for attempt in 0..1_000_u32 {
+        let temporary = directory.join(format!(".{name}.{pid}.{attempt}.tmp"));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error).context("failed to create temporary purge-plan file"),
+        };
+
+        file.write_all(&bytes)
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.sync_all())
+            .context("failed to write temporary purge-plan file")?;
+        drop(file);
+
+        if path.exists() {
+            let _ = fs::remove_file(&temporary);
+            anyhow::bail!(
+                "refusing to overwrite existing purge-plan file {}",
+                path.display()
+            );
+        }
+
+        fs::rename(&temporary, path).with_context(|| {
+            format!(
+                "failed to atomically commit purge-plan file {}",
+                path.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "unable to allocate a temporary file for purge plan {}",
+        path.display()
+    )
+}
+
+fn print_run_purge_review(
+    plan_path: &std::path::Path,
+    plan: &RunPurgePlan,
+    reviewed: &gh_housekeeper_core::RunPurgeRevalidationReport,
+    to_stderr: bool,
+) {
+    let mut lines = vec![
+        format!("Plan:                 {}", plan_path.display()),
+        format!("Account:              {}", plan.account().login),
+        format!("Runs:                 {}", plan.summary().run_count()),
+        format!("Artifacts:            {}", plan.summary().artifact_count()),
+        format!(
+            "Artifact storage:      {}",
+            format_bytes(plan.summary().artifact_bytes())
+        ),
+        String::new(),
+        format!(
+            "{:<14} {:<40} {:<28} {:>10} STATE",
+            "RUN ID", "REPOSITORY", "WORKFLOW", "ARTIFACTS"
+        ),
+    ];
+
+    for (target, item) in plan.targets().iter().zip(&reviewed.items) {
+        let run = target.run();
+        lines.push(format!(
+            "{:<14} {:<40} {:<28} {:>10} {}",
+            run.id,
+            run.repository.full_name,
+            run.workflow_name.as_deref().unwrap_or("<unknown>"),
+            target.artifacts().len(),
+            format!("{:?}", item.state).to_lowercase()
+        ));
+    }
+
+    if to_stderr {
+        for line in lines {
+            eprintln!("{line}");
+        }
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+}
+
+fn authorize_run_purge(
+    yes: bool,
+    stdin_is_terminal: bool,
+    response: Option<&str>,
+) -> Result<ExecutionAuthorization> {
+    if yes {
+        return Ok(ExecutionAuthorization::automation_yes());
+    }
+    if !stdin_is_terminal {
+        anyhow::bail!("interactive purge authorization requires a terminal");
+    }
+    if response.map(str::trim) != Some("purge") {
+        anyhow::bail!("purge confirmation did not match exact lowercase word 'purge'");
+    }
+    Ok(ExecutionAuthorization::interactive_confirmation())
+}
+
+fn run_purge_history_matches_repository(
+    record: &RunPurgeAuditRecord,
+    repository: Option<&str>,
+) -> bool {
+    repository
+        .map(|repository| {
+            record.execution.items.iter().any(|item| {
+                item.planned_run
+                    .repository
+                    .full_name
+                    .eq_ignore_ascii_case(repository)
+            })
+        })
+        .unwrap_or(true)
+}
+
+fn run_purge_audit_issue_json(issue: &RunPurgeAuditReadIssue) -> serde_json::Value {
+    json!({
+        "path": issue.path,
+        "message": issue.message,
+    })
+}
+
+fn print_run_purge_audit_issues(issues: &[RunPurgeAuditReadIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+    println!();
+    println!("Audit read issues:");
+    for issue in issues {
+        println!("  {}: {}", issue.path.display(), issue.message);
+    }
+}
+
 
 async fn run_plan(provider: Arc<dyn ArtifactProvider>, command: PlanCommand) -> Result<()> {
     let snapshot = InventoryService::new(provider)
