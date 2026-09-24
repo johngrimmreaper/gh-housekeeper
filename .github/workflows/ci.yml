@@ -2,7 +2,7 @@ name: Rust CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, work/workflow-run-purge]
   pull_request:
 
 permissions:
