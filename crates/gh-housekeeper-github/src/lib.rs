@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
     Account, ActionsCache, Artifact, ArtifactProvider, CacheProvider, DeleteOutcome, ProviderError,
     ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
-    WorkflowRun, WorkflowRunProvider, WorkflowRunRef,
+    WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -476,6 +476,58 @@ impl WorkflowRunProvider for GithubClient {
         }
 
         Ok(artifacts)
+    }
+}
+
+
+#[async_trait]
+impl WorkflowRunPurgeProvider for GithubClient {
+    async fn workflow_run_artifact(
+        &self,
+        repository: &RepositoryRef,
+        artifact_id: u64,
+    ) -> ProviderResult<Option<Artifact>> {
+        ArtifactProvider::artifact(self, repository, artifact_id).await
+    }
+
+    async fn delete_workflow_run_artifact(
+        &self,
+        repository: &RepositoryRef,
+        artifact_id: u64,
+    ) -> ProviderResult<DeleteOutcome> {
+        ArtifactProvider::delete_artifact(self, repository, artifact_id).await
+    }
+
+    async fn delete_workflow_run_logs(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<DeleteOutcome> {
+        validate_full_name(&repository.full_name)?;
+        let path = format!(
+            "/repos/{}/actions/runs/{run_id}/logs",
+            repository.full_name
+        );
+        match self.send_with_policy(Method::DELETE, &path, true).await? {
+            Some(_) => Ok(DeleteOutcome::Deleted),
+            None => Ok(DeleteOutcome::AlreadyAbsent),
+        }
+    }
+
+    async fn delete_workflow_run(
+        &self,
+        repository: &RepositoryRef,
+        run_id: u64,
+    ) -> ProviderResult<DeleteOutcome> {
+        validate_full_name(&repository.full_name)?;
+        let path = format!(
+            "/repos/{}/actions/runs/{run_id}",
+            repository.full_name
+        );
+        match self.send_with_policy(Method::DELETE, &path, true).await? {
+            Some(_) => Ok(DeleteOutcome::Deleted),
+            None => Ok(DeleteOutcome::AlreadyAbsent),
+        }
     }
 }
 
