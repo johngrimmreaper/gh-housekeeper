@@ -431,6 +431,30 @@ mod tests {
         let _ = fs::remove_dir_all(store.directory.parent().unwrap());
     }
 
+    #[tokio::test]
+    async fn a_protection_waits_for_an_in_flight_target_lease() {
+        let store = test_store();
+        store.initialize_empty().unwrap();
+        let entry = protection();
+        let active_purge = store.acquire_target(&entry.key).await.unwrap();
+        let writer_store = store.clone();
+        let writer_entry = entry.clone();
+        let mut writer = tokio::spawn(async move {
+            let lease = writer_store.acquire_target(&writer_entry.key).await.unwrap();
+            lease.protect_verified(writer_entry).unwrap()
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut writer)
+                .await
+                .is_err()
+        );
+        assert!(store.load_strict().unwrap().entries().is_empty());
+        drop(active_purge);
+        assert_eq!(writer.await.unwrap(), ProtectOutcome::Inserted);
+        assert_eq!(store.load_strict().unwrap().entries(), &[entry]);
+        let _ = fs::remove_dir_all(store.directory.parent().unwrap());
+    }
+
     #[test]
     fn corrupt_or_duplicate_state_is_never_an_empty_store() {
         let store = test_store();

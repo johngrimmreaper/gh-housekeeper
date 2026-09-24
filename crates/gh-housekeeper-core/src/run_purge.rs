@@ -1989,6 +1989,7 @@ mod tests {
                 vec![planned_run],
                 RunPurgeSelection {
                     mode: RunPurgeSelectionMode::AllCompleted,
+                    requested_run_ids: Vec::new(),
                     ..selection
                 },
             )
