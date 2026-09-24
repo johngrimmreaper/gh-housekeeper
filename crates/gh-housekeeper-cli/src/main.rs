@@ -2863,6 +2863,279 @@ fn run_purge_history_runs(command: PurgeHistoryCommand) -> Result<()> {
     Ok(())
 }
 
+fn run_purge_history_caches(command: PurgeHistoryCommand) -> Result<()> {
+    let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let history = CachePurgeAuditStore::from_paths(&paths)
+        .read_all()
+        .context("failed to read cache purge audit history")?;
+
+    let records = history
+        .records
+        .iter()
+        .filter(|record| {
+            cache_purge_history_matches_repository(record, command.repository.as_deref())
+        })
+        .collect::<Vec<_>>();
+    let pending_intents = history
+        .pending_intents()
+        .into_iter()
+        .filter(|intent| {
+            command
+                .repository
+                .as_deref()
+                .map(|repository| {
+                    intent.plan.targets().iter().any(|cache| {
+                        cache
+                            .repository
+                            .full_name
+                            .eq_ignore_ascii_case(repository)
+                    })
+                })
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+
+    match command.format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "records": records,
+                "pending_intents": pending_intents,
+                "issues": history.issues.iter().map(cache_purge_audit_issue_json).collect::<Vec<_>>()
+            }))?
+        ),
+        OutputFormat::Table => {
+            println!("Cache purge history");
+            println!("Records:               {}", records.len());
+            println!("Pending intents:       {}", pending_intents.len());
+            println!();
+            println!(
+                "{:<20} {:<18} {:>8} {:>10} {:>14} AUTHORIZATION",
+                "RECORDED", "ACCOUNT", "CACHES", "DELETED", "CACHE BYTES"
+            );
+            for record in records {
+                println!(
+                    "{:<20} {:<18} {:>8} {:>10} {:>14} {}",
+                    record.recorded_at.format("%Y-%m-%d %H:%M:%S"),
+                    record.execution.account.login,
+                    record.execution.cache_count(),
+                    record.execution.deleted_cache_count(),
+                    format_bytes(record.execution.reclaimed_bytes()),
+                    format_authorization(record.execution.authorization)
+                );
+            }
+
+            if !pending_intents.is_empty() {
+                println!();
+                println!("Pending authorized cache purge intents:");
+                for intent in pending_intents {
+                    println!(
+                        "{}  {}  caches={}  {}",
+                        intent.recorded_at.format("%Y-%m-%d %H:%M:%S"),
+                        intent.plan.account.login,
+                        intent.plan.summary().cache_count(),
+                        intent.intent_id
+                    );
+                }
+                println!(
+                    "A pending intent means authorization was recorded but no matching final execution record is available. Inspect remote state before retrying."
+                );
+            }
+            print_cache_purge_audit_issues(&history.issues);
+        }
+    }
+
+    Ok(())
+}
+
+fn read_cache_purge_plan(path: &std::path::Path) -> Result<CachePurgePlan> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("failed to read cache purge plan {}", path.display()))?;
+    let plan: CachePurgePlan = serde_json::from_str(&input)
+        .with_context(|| format!("invalid cache purge plan JSON {}", path.display()))?;
+    plan.validate_integrity()
+        .context("cache purge plan failed integrity validation")?;
+    Ok(plan)
+}
+
+fn write_cache_purge_plan_atomic_new(
+    path: &std::path::Path,
+    value: &CachePurgePlan,
+) -> Result<()> {
+    if path.exists() {
+        anyhow::bail!(
+            "refusing to overwrite existing cache purge-plan file {}",
+            path.display()
+        );
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create plan directory {}", parent.display()))?;
+    }
+
+    let directory = parent.unwrap_or_else(|| std::path::Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("cache purge-plan output path must have a UTF-8 file name")?;
+    let bytes = serde_json::to_vec_pretty(value)?;
+    let pid = std::process::id();
+
+    for attempt in 0..1_000_u32 {
+        let temporary = directory.join(format!(".{name}.{pid}.{attempt}.tmp"));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).context("failed to create temporary cache purge-plan file");
+            }
+        };
+
+        if let Err(error) = file
+            .write_all(&bytes)
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.sync_all())
+        {
+            drop(file);
+            let _ = fs::remove_file(&temporary);
+            return Err(error).context("failed to write temporary cache purge-plan file");
+        }
+        drop(file);
+
+        if path.exists() {
+            let _ = fs::remove_file(&temporary);
+            anyhow::bail!(
+                "refusing to overwrite existing cache purge-plan file {}",
+                path.display()
+            );
+        }
+
+        if let Err(error) = fs::rename(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to atomically commit cache purge-plan file {}",
+                    path.display()
+                )
+            });
+        }
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "unable to allocate a temporary file for cache purge plan {}",
+        path.display()
+    )
+}
+
+fn print_cache_purge_review(
+    plan_path: &std::path::Path,
+    plan: &CachePurgePlan,
+    reviewed: &gh_housekeeper_core::CachePurgeRevalidationReport,
+    to_stderr: bool,
+) {
+    let mut lines = vec![
+        format!("Plan:                 {}", plan_path.display()),
+        format!("Account:              {}", plan.account.login),
+        format!("Caches:               {}", plan.summary().cache_count()),
+        format!(
+            "Repositories:         {}",
+            cache_purge_repository_count(plan)
+        ),
+        format!(
+            "Cache storage:        {}",
+            format_bytes(plan.summary().cache_bytes())
+        ),
+        String::new(),
+        format!(
+            "{:<12} {:<40} {:<42} {:>14} STATE",
+            "CACHE ID", "REPOSITORY", "KEY", "SIZE"
+        ),
+    ];
+
+    for (cache, item) in plan.targets().iter().zip(&reviewed.items) {
+        lines.push(format!(
+            "{:<12} {:<40} {:<42} {:>14} {}",
+            cache.id,
+            cache.repository.full_name,
+            cache.key,
+            format_bytes(cache.size_in_bytes),
+            format!("{:?}", item.state).to_lowercase()
+        ));
+    }
+    lines.push(String::new());
+    lines.push(
+        "Release assets are outside this plan and cannot be deleted by the Actions-cache purge capability."
+            .to_owned(),
+    );
+
+    if to_stderr {
+        for line in lines {
+            eprintln!("{line}");
+        }
+    } else {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+}
+
+fn cache_purge_repository_count(plan: &CachePurgePlan) -> usize {
+    plan.targets()
+        .iter()
+        .map(|cache| cache.repository.full_name.as_str())
+        .collect::<HashSet<_>>()
+        .len()
+}
+
+fn cache_purge_confirmation_phrase(cache_count: usize, repository_count: usize) -> String {
+    format!(
+        "purge {cache_count} caches from {repository_count} repositories"
+    )
+}
+
+fn cache_purge_history_matches_repository(
+    record: &CachePurgeAuditRecord,
+    repository: Option<&str>,
+) -> bool {
+    repository
+        .map(|repository| {
+            record.execution.items.iter().any(|item| {
+                item.planned
+                    .repository
+                    .full_name
+                    .eq_ignore_ascii_case(repository)
+            })
+        })
+        .unwrap_or(true)
+}
+
+fn cache_purge_audit_issue_json(issue: &CachePurgeAuditReadIssue) -> serde_json::Value {
+    json!({
+        "path": issue.path,
+        "message": issue.message,
+    })
+}
+
+fn print_cache_purge_audit_issues(issues: &[CachePurgeAuditReadIssue]) {
+    if issues.is_empty() {
+        return;
+    }
+    println!();
+    println!("Cache purge audit read issues:");
+    for issue in issues {
+        println!("  {}: {}", issue.path.display(), issue.message);
+    }
+}
+
 fn read_run_purge_plan(path: &std::path::Path) -> Result<RunPurgePlan> {
     let input = fs::read_to_string(path)
         .with_context(|| format!("failed to read workflow-run purge plan {}", path.display()))?;
