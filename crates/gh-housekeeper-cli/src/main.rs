@@ -2246,11 +2246,45 @@ async fn run_purge_apply(
                 .flat_map(|item| item.artifacts.iter())
                 .filter(|artifact| artifact.state == RunPurgeExecutionState::Deleted)
                 .count();
+            let runs_blocked = execution
+                .items
+                .iter()
+                .filter(|item| item.run.state == RunPurgeExecutionState::Blocked)
+                .count();
+            let runs_revalidation_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.run.state == RunPurgeExecutionState::RevalidationFailed)
+                .count();
+            let runs_verification_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.run.state == RunPurgeExecutionState::VerificationFailed)
+                .count();
+            let runs_delete_failed = execution
+                .items
+                .iter()
+                .filter(|item| item.run.state == RunPurgeExecutionState::DeleteFailed)
+                .count();
+            let rate_limit_halted_targets = execution
+                .items
+                .iter()
+                .filter(|item| {
+                    item.run.error.as_deref()
+                        == Some(
+                            "batch halted after provider rate limit; target was not attempted",
+                        )
+                })
+                .count();
 
             println!();
             println!("Workflow-run purge complete");
             println!("Runs reviewed:         {}", execution.run_count());
             println!("Runs deleted:          {}", execution.deleted_run_count());
+            println!("Runs blocked:          {runs_blocked}");
+            println!("Revalidation failed:   {runs_revalidation_failed}");
+            println!("Verification failed:   {runs_verification_failed}");
+            println!("Run deletion failed:   {runs_delete_failed}");
             println!("Run logs deleted:      {logs_deleted}");
             println!("Artifacts deleted:     {artifacts_deleted}");
             println!(
@@ -2262,6 +2296,11 @@ async fn run_purge_apply(
 
             if !execution.is_complete_success() {
                 println!();
+                if rate_limit_halted_targets > 0 {
+                    println!(
+                        "Provider rate limit halted the batch; {rate_limit_halted_targets} remaining target(s) were not attempted."
+                    );
+                }
                 println!(
                     "Purge completed with blocked or failed step(s); inspect the audit record before retrying anything."
                 );
