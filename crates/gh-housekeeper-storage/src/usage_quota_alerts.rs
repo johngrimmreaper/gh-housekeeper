@@ -188,7 +188,7 @@ impl UsageQuotaAlertStore {
         })
     }
 
-    pub fn record_if_new(
+    pub fn record_delivery_if_new(
         &self,
         key: &UsageQuotaAlertKey,
     ) -> Result<UsageQuotaAlertRecordOutcome, UsageQuotaAlertStoreError> {
@@ -384,7 +384,7 @@ mod tests {
             UsageQuotaAlertDeliveryState::NotDelivered
         );
         assert!(matches!(
-            store.record_if_new(&key).unwrap(),
+            store.record_delivery_if_new(&key).unwrap(),
             UsageQuotaAlertRecordOutcome::Recorded(_)
         ));
         assert_eq!(
@@ -392,7 +392,7 @@ mod tests {
             UsageQuotaAlertDeliveryState::Delivered
         );
         assert!(matches!(
-            store.record_if_new(&key).unwrap(),
+            store.record_delivery_if_new(&key).unwrap(),
             UsageQuotaAlertRecordOutcome::AlreadyRecorded(_)
         ));
 
@@ -404,7 +404,7 @@ mod tests {
         let state_dir = test_state_dir("period-threshold");
         let store = UsageQuotaAlertStore::new(&state_dir);
         let september_warning = key("example-user", 9, UsageQuotaThreshold::Warning);
-        store.record_if_new(&september_warning).unwrap();
+        store.record_delivery_if_new(&september_warning).unwrap();
 
         let october_warning = key("example-user", 10, UsageQuotaThreshold::Warning);
         let september_critical = key("example-user", 9, UsageQuotaThreshold::Critical);
@@ -426,7 +426,7 @@ mod tests {
         let state_dir = test_state_dir("account-resource");
         let store = UsageQuotaAlertStore::new(&state_dir);
         let base = key("example-user", 9, UsageQuotaThreshold::Warning);
-        store.record_if_new(&base).unwrap();
+        store.record_delivery_if_new(&base).unwrap();
 
         let other_account = key("another-user", 9, UsageQuotaThreshold::Warning);
         let mut other_resource = base.clone();
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(lookup.state, UsageQuotaAlertDeliveryState::Unknown);
         assert_eq!(lookup.issues.len(), 1);
         assert!(matches!(
-            store.record_if_new(&key),
+            store.record_delivery_if_new(&key),
             Err(UsageQuotaAlertStoreError::IndeterminateHistory {
                 issue_count: 1
             })
@@ -470,7 +470,7 @@ mod tests {
         let state_dir = test_state_dir("valid-plus-corrupt");
         let store = UsageQuotaAlertStore::new(&state_dir);
         let key = key("example-user", 9, UsageQuotaThreshold::Warning);
-        store.record_if_new(&key).unwrap();
+        store.record_delivery_if_new(&key).unwrap();
         fs::write(store.directory().join("corrupt.json"), b"{").unwrap();
 
         let lookup = store.lookup(&key).unwrap();
