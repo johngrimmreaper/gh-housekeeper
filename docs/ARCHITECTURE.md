@@ -12,10 +12,10 @@ No policy decision may depend on a hard-coded repository, owner, workflow, branc
 
 Provider-neutral domain types and shared application services:
 
-- account, repository, workflow-run reference, artifact, and Actions-cache models;
+- account, repository, workflow-run reference, strong workflow-run, artifact, and Actions-cache models;
 - scan scope plus resource-specific inventory snapshots;
-- small provider capabilities: shared `RepositoryProvider`, mature `ArtifactProvider`, and read-only `CacheProvider`;
-- a shared bounded repository/resource scan primitive used by artifact and cache inventory;
+- small provider capabilities: shared `RepositoryProvider`, mature `ArtifactProvider`, read-only `CacheProvider`, `WorkflowRunProvider`, and destructive `WorkflowRunPurgeProvider`;
+- a shared bounded repository/resource scan primitive used by artifact, cache, and workflow-run inventory;
 - resource-specific storage aggregation;
 - generic byte, duration, and glob helpers.
 
@@ -41,7 +41,7 @@ Declarative, resource-aware policy parsing and explainable classification for ar
 
 ### `gh-housekeeper-storage`
 
-Local configuration, cache, state, audit persistence, and monitoring-sample persistence. Platform-aware application paths are implemented, along with a versioned append-only execution-audit store, versioned monitoring history, and versioned TOML application configuration. Missing configuration produces safe in-memory defaults with monitoring thresholds unconfigured; unknown fields and invalid threshold ordering are rejected. Execution audit and monitoring samples use separate immutable per-record JSON files written through a temporary file, `sync_all`, and rename before they become visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached, configuration-history, audit, and monitoring-history state never substitutes for remote revalidation authority.
+Local configuration, cache, state, audit persistence, and monitoring-sample persistence. Platform-aware application paths are implemented, along with a versioned append-only artifact execution-audit store, a separate versioned workflow-run purge audit store, versioned monitoring history, and versioned TOML application configuration. Missing configuration produces safe in-memory defaults with monitoring thresholds unconfigured; unknown fields and invalid threshold ordering are rejected. Execution audit and monitoring samples use separate immutable per-record JSON files written through a temporary file, `sync_all`, and rename before they become visible to readers. Corrupt/truncated records are reported as read issues without hiding valid history. Cached, configuration-history, audit, and monitoring-history state never substitutes for remote revalidation authority.
 
 ### `gh-housekeeper-cli`
 
@@ -60,15 +60,16 @@ GitHub REST
     -> gh-housekeeper-github DTOs
     -> RepositoryProvider
     -> shared bounded repository scan
-         |-> ArtifactProvider -> Artifact -> InventorySnapshot
-         `-> CacheProvider    -> ActionsCache -> CacheInventorySnapshot
+         |-> ArtifactProvider    -> Artifact    -> InventorySnapshot
+         |-> CacheProvider       -> ActionsCache -> CacheInventorySnapshot
+         `-> WorkflowRunProvider -> WorkflowRun -> WorkflowRunInventorySnapshot
 ```
 
 The existing `ArtifactProvider` still owns account/repository/telemetry methods for source compatibility with the mature artifact safety pipeline. A blanket adapter exposes those providers as `RepositoryProvider`; newer capabilities such as `CacheProvider` compose around the smaller shared repository capability rather than growing one monolithic trait. This is a transitional compatibility shape, not a requirement that future providers implement artifacts before other resources.
 
 Basic inventory intentionally avoids expensive metadata enrichment. Artifact inventory supplies storage totals, age, expiration, branch/SHA references, and workflow-run IDs. Cache inventory separately models key, version, Git ref, creation time, last-accessed time, and size. `last_accessed_at` is first-class because cache retention needs semantics different from artifact age.
 
-Inventory stays progressive: an artifact command does not enumerate caches, and the cache command does not enumerate artifacts. Workflow-run inventory will follow the same rule.
+Inventory stays progressive: an artifact command does not enumerate caches or runs, the cache command does not enumerate artifacts or runs, and the workflow-run command enumerates only runs. Run-owned artifacts are fetched only when a workflow-run purge plan needs to freeze that dependency set.
 
 ## Concurrency
 
@@ -121,9 +122,41 @@ SCAN
 
 Enumeration and deletion are separate phases. Deleting a target can never determine what the next target is.
 
+## Workflow-run purge architecture
+
+Workflow-run purge is implemented as a separate destructive pipeline rather than reusing artifact `CleanupPlan` schema v1. A `RunPurgePlan` freezes only completed workflow runs and the exact run-owned artifact snapshots observed during planning. Selection is explicit: exact run IDs or an explicit all-completed mode, optionally narrowed by non-policy filters.
+
+The run purge pipeline is dependency-aware:
+
+```text
+complete workflow-run inventory
+    -> exact completed-run selection
+    -> exact run lookup
+    -> run-owned artifact snapshot
+    -> immutable RunPurgePlan
+    -> remote revalidation
+    -> explicit authorization
+    -> delete run logs
+    -> delete exact unchanged artifact IDs
+    -> enumerate run artifacts again
+    -> require no residual artifacts
+    -> revalidate stable run identity
+    -> delete run last
+    -> exact lookup to verify disappearance
+    -> RunPurgeAuditStore
+```
+
+`RunPurgeRevalidationService` treats newly-visible or changed artifacts as unsafe drift. Missing planned artifacts may be treated as already absent, but an unexpected artifact is never silently absorbed into the reviewed plan. The executor likewise never chooses a replacement target during execution.
+
+After artifact deletion, the executor performs a second run-scoped artifact enumeration. Any residual artifact blocks run deletion and is preserved in the execution report. If GitHub reports successful run deletion, an exact lookup must confirm that the run disappeared; otherwise the final state is `VerificationFailed` rather than an assumed success.
+
+Run purge audit is intentionally separate from artifact audit. `RunPurgeExecutionReport` preserves the account, plan schema and timestamps, scope, selection, authorization, telemetry, complete planned run metadata, complete planned artifact snapshots, log result, artifact results, residual artifacts, and final run result. This keeps the local history useful after the remote run and logs no longer exist.
+
+This explicit purge path is not workflow-run policy classification. Run `keep_days` and `keep_latest` semantics remain a later policy-engine slice and must feed exact selected runs into the same immutable purge machinery rather than creating a second destructive implementation.
+
 ## Multi-resource direction
 
-The next backend milestones are strongly typed cache planning/revalidation/deletion, then workflow-run inventory and workflow-run-log operations. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
+Workflow-run inventory and explicit dependency-aware purge are now implemented. The next backend milestones are strongly typed cache planning/revalidation/deletion and, separately, workflow-run policy classification that can select exact completed runs for the existing purge pipeline. Resource-specific strong types remain preferred over a generic structure with many optional fields. Shared abstractions should cover only real common behavior such as repository discovery, bounded enumeration, plan identity, authorization, audit, and dependency resolution.
 
 Monitoring is still artifact-only in the current schema. Once cache housekeeping is structurally integrated, monitoring can evolve to expose artifact count/bytes and cache count/bytes as separate categories plus a clearly-defined observable-storage total. Run/log metrics remain separate unless a trustworthy byte measurement is available.
 
