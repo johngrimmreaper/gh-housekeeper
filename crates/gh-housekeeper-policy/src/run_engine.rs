@@ -1,4 +1,5 @@
-use crate::{Decision, DecisionReason, PolicyEngine, PolicyRule, ReasonCode};
+use crate::{Decision, DecisionReason, KeepLatestBy, PolicyEngine, PolicyRule, ReasonCode, DEFAULT_KEEP_DAYS};
+use chrono::{Datelike, Days, Weekday};
 use gh_housekeeper_core::{
     ProtectionAssessment, ProtectionIndex, ProtectionReviewCode, WorkflowRun,
     WorkflowRunInventorySnapshot,
@@ -9,6 +10,21 @@ use std::collections::{BTreeMap, BTreeSet};
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 type RunIdentity = (String, u64);
 type RunFamily = (String, u64, Option<String>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum RunRetention {
+    ElapsedDays(u64),
+    BusinessDays(u64),
+}
+
+impl RunRetention {
+    fn describe(self) -> String {
+        match self {
+            Self::ElapsedDays(days) => format!("{days} elapsed day(s)"),
+            Self::BusinessDays(days) => format!("{days} UTC business day(s)"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowRunDecision {
@@ -21,6 +37,8 @@ pub struct WorkflowRunDecision {
     pub conclusion: Option<String>,
     pub decision: Decision,
     pub effective_keep_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_keep_business_days: Option<u64>,
     pub reasons: Vec<DecisionReason>,
 }
 
@@ -96,12 +114,12 @@ impl PolicyEngine {
                 .iter()
                 .filter(|run| run.is_completed() && rule.matches_workflow_run(run))
             {
+                let branch = match rule.keep_latest_by.unwrap_or_default() {
+                    KeepLatestBy::WorkflowBranch => run.head_branch.clone(),
+                    KeepLatestBy::Workflow => None,
+                };
                 families
-                    .entry((
-                        run.repository.full_name.clone(),
-                        run.workflow_id,
-                        run.head_branch.clone(),
-                    ))
+                    .entry((run.repository.full_name.clone(), run.workflow_id, branch))
                     .or_default()
                     .push(run);
             }
@@ -223,9 +241,7 @@ impl PolicyEngine {
                 .map(|rule_id| DecisionReason {
                     code: ReasonCode::KeepLatest,
                     rule_id: Some(rule_id.clone()),
-                    explanation: format!(
-                        "workflow run is among the latest completed runs retained by policy rule {rule_id} for its repository/workflow/branch family"
-                    ),
+                    explanation: format!("workflow run is among the latest completed runs retained by policy rule {rule_id}"),
                 })
                 .collect();
             return run_decision(run, Decision::Keep, None, reasons);
@@ -233,7 +249,7 @@ impl PolicyEngine {
 
         let retention_rules: Vec<&PolicyRule> = matching_rules
             .into_iter()
-            .filter(|rule| rule.keep_days.is_some())
+            .filter(|rule| rule.keep_days.is_some() || rule.keep_business_days.is_some())
             .collect();
 
         if let Some(max_specificity) = retention_rules.iter().map(|rule| rule.specificity()).max() {
@@ -241,32 +257,40 @@ impl PolicyEngine {
                 .into_iter()
                 .filter(|rule| rule.specificity() == max_specificity)
                 .collect();
-            let keep_days: BTreeSet<u64> = most_specific
+            let retentions: BTreeSet<RunRetention> = most_specific
                 .iter()
-                .filter_map(|rule| rule.keep_days)
+                .filter_map(|rule| match (rule.keep_days, rule.keep_business_days) {
+                    (Some(days), None) => Some(RunRetention::ElapsedDays(days)),
+                    (None, Some(days)) => Some(RunRetention::BusinessDays(days)),
+                    _ => None,
+                })
                 .collect();
 
-            if keep_days.len() > 1 {
+            if retentions.len() > 1 {
                 let reasons = most_specific
                     .into_iter()
                     .map(|rule| DecisionReason {
                         code: ReasonCode::ConflictingRetentionRules,
                         rule_id: Some(rule.id.clone()),
                         explanation: format!(
-                            "equally specific workflow-run rule {} requests keep_days = {}",
+                            "equally specific workflow-run rule {} requests {}",
                             rule.id,
-                            rule.keep_days.unwrap_or_default()
+                            match (rule.keep_days, rule.keep_business_days) {
+                                (Some(days), None) => RunRetention::ElapsedDays(days),
+                                (None, Some(days)) => RunRetention::BusinessDays(days),
+                                _ => unreachable!("validated workflow-run retention"),
+                            }.describe()
                         ),
                     })
                     .collect();
                 return run_decision(run, Decision::ManualReview, None, reasons);
             }
 
-            let keep_days = keep_days
+            let retention = retentions
                 .into_iter()
                 .next()
-                .unwrap_or(self.config().defaults.runs.keep_days);
-            let expired = workflow_run_retention_expired(run, scanned_at, keep_days);
+                .expect("retention rules declare a retention mode");
+            let expired = workflow_run_retention_expired(run, scanned_at, retention);
             let code = if expired {
                 ReasonCode::RuleRetentionExpired
             } else {
@@ -278,8 +302,8 @@ impl PolicyEngine {
                     code,
                     rule_id: Some(rule.id.clone()),
                     explanation: format!(
-                        "effective workflow-run retention is {keep_days} day(s) because of policy rule {}",
-                        rule.id
+                        "effective workflow-run retention is {} because of policy rule {}",
+                        retention.describe(), rule.id
                     ),
                 })
                 .collect();
@@ -291,13 +315,17 @@ impl PolicyEngine {
                 } else {
                     Decision::Keep
                 },
-                Some(keep_days),
+                retention,
                 reasons,
             );
         }
 
-        let keep_days = self.config().defaults.runs.keep_days;
-        let expired = workflow_run_retention_expired(run, scanned_at, keep_days);
+        let defaults = &self.config().defaults.runs;
+        let retention = match defaults.keep_business_days {
+            Some(days) => RunRetention::BusinessDays(days),
+            None => RunRetention::ElapsedDays(defaults.keep_days.unwrap_or(DEFAULT_KEEP_DAYS)),
+        };
+        let expired = workflow_run_retention_expired(run, scanned_at, retention);
         run_decision(
             run,
             if expired {
@@ -305,7 +333,7 @@ impl PolicyEngine {
             } else {
                 Decision::Keep
             },
-            Some(keep_days),
+            retention,
             vec![DecisionReason {
                 code: if expired {
                     ReasonCode::DefaultRetentionExpired
@@ -313,7 +341,7 @@ impl PolicyEngine {
                     ReasonCode::DefaultRetentionActive
                 },
                 rule_id: None,
-                explanation: format!("default workflow-run retention is {keep_days} day(s)"),
+                explanation: format!("default workflow-run retention is {}", retention.describe()),
             }],
         )
     }
@@ -322,15 +350,40 @@ impl PolicyEngine {
 fn workflow_run_retention_expired(
     run: &WorkflowRun,
     scanned_at: chrono::DateTime<chrono::Utc>,
-    keep_days: u64,
+    retention: RunRetention,
 ) -> bool {
-    run.age_seconds(scanned_at) >= keep_days.saturating_mul(SECONDS_PER_DAY)
+    match retention {
+        RunRetention::ElapsedDays(days) => run.age_seconds(scanned_at) >= days.saturating_mul(SECONDS_PER_DAY),
+        RunRetention::BusinessDays(days) => business_day_deadline(run.created_at, days)
+            .is_some_and(|deadline| scanned_at >= deadline),
+    }
+}
+
+// Creation date does not count; the Nth following Monday-Friday ends at the
+// run's UTC creation time. Unrepresentable deadlines never expire.
+fn business_day_deadline(
+    created_at: chrono::DateTime<chrono::Utc>,
+    days: u64,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    if days == 0 {
+        return Some(created_at);
+    }
+    let weeks = (days - 1) / 5;
+    let mut deadline = created_at.checked_add_days(Days::new(weeks.checked_mul(7)?))?;
+    let mut remaining = (days - 1) % 5 + 1;
+    while remaining > 0 {
+        deadline = deadline.checked_add_days(Days::new(1))?;
+        if !matches!(deadline.weekday(), Weekday::Sat | Weekday::Sun) {
+            remaining -= 1;
+        }
+    }
+    Some(deadline)
 }
 
 fn run_decision(
     run: &WorkflowRun,
     value: Decision,
-    effective_keep_days: Option<u64>,
+    retention: Option<RunRetention>,
     reasons: Vec<DecisionReason>,
 ) -> WorkflowRunDecision {
     WorkflowRunDecision {
@@ -342,7 +395,8 @@ fn run_decision(
         event: run.event.clone(),
         conclusion: run.conclusion.clone(),
         decision: value,
-        effective_keep_days,
+        effective_keep_days: match retention { Some(RunRetention::ElapsedDays(days)) => Some(days), _ => None },
+        effective_keep_business_days: match retention { Some(RunRetention::BusinessDays(days)) => Some(days), _ => None },
         reasons,
     }
 }
@@ -508,6 +562,111 @@ keep_latest = 2
     }
 
     #[test]
+    fn utc_business_days_skip_weekends_and_expire_at_the_original_time() {
+        let friday = Utc.with_ymd_and_hms(2026, 1, 2, 16, 30, 0).unwrap();
+        let monday = Utc.with_ymd_and_hms(2026, 1, 5, 16, 30, 0).unwrap();
+        let tuesday = Utc.with_ymd_and_hms(2026, 1, 6, 16, 30, 0).unwrap();
+        assert_eq!(business_day_deadline(friday, 0), Some(friday));
+        assert_eq!(business_day_deadline(friday, 1), Some(monday));
+        assert_eq!(business_day_deadline(friday, 2), Some(tuesday));
+        assert_eq!(business_day_deadline(friday, 5), Some(Utc.with_ymd_and_hms(2026, 1, 9, 16, 30, 0).unwrap()));
+        assert_eq!(business_day_deadline(friday, 6), Some(Utc.with_ymd_and_hms(2026, 1, 12, 16, 30, 0).unwrap()));
+        assert_eq!(business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 3, 16, 30, 0).unwrap(), 1), Some(monday));
+        assert_eq!(business_day_deadline(Utc.with_ymd_and_hms(2026, 1, 4, 16, 30, 0).unwrap(), 2), Some(tuesday));
+        assert_eq!(business_day_deadline(friday, u64::MAX), None);
+    }
+
+    #[test]
+    fn business_day_policy_keeps_friday_run_through_monday() {
+        let mut item = run(11, "example-user/project-alpha", 10, "temporary", "completed", 2);
+        item.created_at = Utc.with_ymd_and_hms(2026, 1, 2, 16, 30, 0).unwrap();
+        let config = PolicyConfig::from_toml("[defaults.runs]\nkeep_business_days = 2\n").unwrap();
+        let engine = PolicyEngine::new(config).unwrap();
+        let mut inventory = snapshot(vec![item]);
+        for (hour, minute, expected) in [(16, 29, Decision::Keep), (16, 30, Decision::Keep)] {
+            inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 5, hour, minute, 0).unwrap();
+            assert_eq!(engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs").decisions[0].decision, expected);
+        }
+        inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 6, 16, 29, 59).unwrap();
+        assert_eq!(engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs").delete_count(), 0);
+        inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 6, 16, 30, 0).unwrap();
+        let report = engine.classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(report.delete_identities(), BTreeSet::from([("example-user/project-alpha".to_owned(), 11)]));
+        assert_eq!(report.decisions[0].effective_keep_business_days, Some(2));
+        assert_eq!(report.decisions[0].effective_keep_days, None);
+    }
+
+    #[test]
+    fn rule_retention_replaces_default_mode_and_conflicting_rules_require_review() {
+        let mut inventory = snapshot(vec![run(1, "example-user/project-alpha", 10, "main", "completed", 2)]);
+        inventory.scanned_at = Utc.with_ymd_and_hms(2026, 1, 5, 1, 0, 0).unwrap();
+        let config = PolicyConfig::from_toml(r#"
+[defaults.runs]
+keep_business_days = 2
+[[rules]]
+id = "elapsed"
+resource = "workflow_run"
+keep_days = 1
+"#).unwrap();
+        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(report.delete_count(), 1);
+        assert_eq!(report.decisions[0].effective_keep_days, Some(1));
+
+        let config = PolicyConfig::from_toml(r#"
+[defaults.runs]
+keep_days = 1
+[[rules]]
+id = "business"
+resource = "workflow_run"
+keep_business_days = 2
+"#).unwrap();
+        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(report.delete_count(), 0);
+        assert_eq!(report.decisions[0].effective_keep_business_days, Some(2));
+
+        let config = PolicyConfig::from_toml(r#"
+[[rules]]
+id = "elapsed"
+resource = "workflow_run"
+keep_days = 2
+[[rules]]
+id = "business"
+resource = "workflow_run"
+keep_business_days = 2
+"#).unwrap();
+        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(report.decisions[0].decision, Decision::ManualReview);
+    }
+
+    #[test]
+    fn workflow_grouping_counts_across_ephemeral_branches_with_deterministic_ties() {
+        let config = PolicyConfig::from_toml(r#"
+[defaults.runs]
+keep_days = 1
+[[rules]]
+id = "two-per-workflow"
+resource = "workflow_run"
+keep_latest = 2
+keep_latest_by = "workflow"
+"#).unwrap();
+        let mut runs = vec![
+            run(1, "example-user/project-alpha", 10, "feature-a", "completed", 1),
+            run(2, "example-user/project-alpha", 10, "feature-b", "completed", 1),
+            run(3, "example-user/project-alpha", 10, "feature-c", "completed", 1),
+            run(4, "example-user/project-alpha", 20, "feature-d", "completed", 1),
+            run(5, "example-user/project-beta", 10, "feature-e", "completed", 1),
+            run(6, "example-user/project-alpha", 10, "feature-f", "in_progress", 1),
+        ];
+        runs[0].updated_at = runs[1].updated_at;
+        runs[0].run_number = runs[1].run_number;
+        let inventory = snapshot(runs);
+        let report = PolicyEngine::new(config).unwrap().classify_workflow_run_snapshot(&inventory, &ProtectionIndex::default(), "test://runs");
+        assert_eq!(report.delete_identities(), BTreeSet::from([("example-user/project-alpha".to_owned(), 1)]));
+        assert_eq!(report.decisions[5].decision, Decision::Keep);
+        assert_eq!(report.decisions[5].reasons[0].code, ReasonCode::RunNotCompleted);
+    }
+
+    #[test]
     fn protection_outranks_retention() {
         let config = PolicyConfig::from_toml(
             r#"
@@ -555,13 +714,15 @@ protect = true
         let config = PolicyConfig::from_toml(
             r#"
 [defaults.runs]
-keep_days = 1
+keep_business_days = 1
 
 [[rules]]
 id = "protect-main"
 resource = "workflow_run"
 branch = "main"
 protect = true
+keep_latest = 1
+keep_latest_by = "workflow"
 "#,
         )
         .unwrap();
