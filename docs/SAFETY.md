@@ -65,7 +65,7 @@ Bulk mutation will be deliberately throttled to reduce secondary-rate-limit risk
 
 Artifacts and Actions caches are separate measurable storage categories. Cache bytes are not silently relabeled as artifact bytes, and current artifact monitoring does not claim to include caches. Workflow runs and run logs must use their own metrics when reliable byte usage is unavailable.
 
-Deleting a workflow run may remove artifacts associated with that run. Before run deletion is implemented, multi-resource cleanup planning must resolve dependencies so it neither double-deletes those artifacts nor double-counts their reclaimable bytes. Deleting run logs must remain a separate operation from deleting the run itself.
+Deleting a workflow run may remove artifacts associated with that run. The implemented run-purge path therefore treats run logs, run-owned artifacts, and the run itself as an ordered dependency set rather than relying on implicit cascading deletion. Deleting run logs remains a separate operation from deleting the run itself, and caches remain outside run purge because they are repository/ref/key resources rather than safely run-owned resources.
 
 ## Dry-run and confirmation
 
@@ -97,7 +97,40 @@ Before asking for consent, `apply` revalidates the immutable plan and refuses an
 
 The CLI does not claim successful completion until the resulting execution report has been persisted through `AuditStore`. If remote execution completes but the state directory cannot be resolved or audit persistence fails, the command surfaces that condition explicitly and warns against blind retry because remote mutations may already have occurred.
 
-No destructive live validation should use valuable existing project artifacts. Any future end-to-end DELETE validation must use a deliberately-created disposable artifact in a controlled disposable repository or equivalent target.
+No destructive live validation should use valuable existing project artifacts or historical workflow runs. Any end-to-end artifact or workflow-run DELETE validation must use deliberately-created disposable data in a controlled disposable repository/run or equivalent target.
+
+
+## Workflow-run purge safety
+
+Workflow-run purge uses its own immutable plan and audit types. It does not reinterpret an artifact `CleanupPlan` as a run deletion request.
+
+A run may enter a purge plan only when its snapshotted status is `completed`. Bulk selection is never implicit: callers must provide exact `--run-id` values or explicitly request `--all-completed`. Optional workflow/branch/event/conclusion/age filters may narrow all-completed selection, but they do not replace exact IDs inside the resulting plan.
+
+Planning refuses incomplete repository/run inventory and then exact-lookups each selected run before snapshotting its run-scoped artifacts. If the run changes or disappears during this dependency-snapshot phase, the plan is not silently retargeted.
+
+Before consent, revalidation exact-lookups the planned run and re-enumerates its run-owned artifacts. Changed artifacts and newly-visible unexpected artifacts make the reviewed plan unsafe. Missing planned artifacts may be represented as already absent; they do not authorize a replacement target.
+
+After explicit authorization, the destructive order is fixed:
+
+```text
+JIT run/dependency validation
+ -> delete run logs
+ -> exact-lookup and delete each unchanged planned artifact
+ -> enumerate run artifacts again
+ -> require zero residual artifacts
+ -> exact-lookup stable run identity
+ -> delete the run last
+ -> exact-lookup the run again to verify disappearance
+ -> persist the complete purge audit
+```
+
+The executor never deletes the run when log/artifact cleanup is incomplete. If an artifact still exists after its DELETE was reported successful, that artifact becomes `VerificationFailed`, the residual snapshot is recorded, and the run is retained. Any other residual artifact also blocks run deletion.
+
+A successful run DELETE is not accepted blindly. The provider must subsequently return the run as absent; a still-present run or failed verification lookup becomes `VerificationFailed`, preserving uncertainty instead of claiming success.
+
+Interactive workflow-run purge requires a terminal and the exact lowercase word `purge`. Non-interactive purge requires explicit `--yes`. This authorization is distinct from artifact cleanup's lowercase `delete` confirmation.
+
+Workflow-run purge execution records live under a separate versioned `run-purge-audit/v1` state directory. The record preserves complete planned run and artifact snapshots plus every dependency/final-run outcome, so local audit remains meaningful after GitHub no longer exposes the deleted run or logs. Audit state remains observational and can never authorize another deletion.
 
 ## Explainability
 
