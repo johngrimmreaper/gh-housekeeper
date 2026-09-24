@@ -89,7 +89,7 @@ impl RunProtection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProtectionAssessment {
     NoEntry,
-    Protected(RunProtection),
+    Protected(Box<RunProtection>),
     Review {
         code: ProtectionReviewCode,
         explanation: String,
@@ -185,7 +185,7 @@ impl ProtectionIndex {
                     .to_owned(),
             };
         }
-        ProtectionAssessment::Protected(entry.clone())
+        ProtectionAssessment::Protected(Box::new(entry.clone()))
     }
 }
 
