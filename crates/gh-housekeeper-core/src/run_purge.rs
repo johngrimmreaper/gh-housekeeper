@@ -19,6 +19,7 @@ const RUN_PURGE_RATE_LIMIT_HEADROOM: u64 = 250;
 pub enum RunPurgeSelectionMode {
     ExplicitRunIds,
     AllCompleted,
+    Policy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +32,8 @@ pub struct RunPurgeSelection {
     pub branch: Option<String>,
     pub event: Option<String>,
     pub conclusion: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1467,6 +1470,7 @@ mod tests {
                     branch: None,
                     event: None,
                     conclusion: None,
+                    policy_hash: None,
                 },
             )
             .await
@@ -1501,6 +1505,7 @@ mod tests {
                     branch: None,
                     event: None,
                     conclusion: None,
+                    policy_hash: None,
                 },
             )
             .await
@@ -1539,6 +1544,7 @@ mod tests {
                     branch: None,
                     event: None,
                     conclusion: None,
+                    policy_hash: None,
                 },
             )
             .await
@@ -1589,6 +1595,7 @@ mod tests {
                     branch: None,
                     event: None,
                     conclusion: None,
+                    policy_hash: None,
                 },
             )
             .await
@@ -1640,6 +1647,7 @@ mod tests {
                     branch: None,
                     event: None,
                     conclusion: None,
+                    policy_hash: None,
                 },
             )
             .await
@@ -1693,6 +1701,7 @@ mod tests {
                 branch: None,
                 event: None,
                 conclusion: None,
+                policy_hash: None,
             },
             vec![RunPurgeTarget {
                 run: planned_run,
