@@ -5,6 +5,7 @@ mod config;
 mod monitoring_history;
 mod run_protections;
 mod run_purge_audit;
+mod usage_quota_alerts;
 
 pub use account_usage_history::{
     ACCOUNT_USAGE_SAMPLE_SCHEMA_VERSION, AccountUsageHistory, AccountUsageHistoryError,
@@ -29,6 +30,12 @@ pub use monitoring_history::{
 pub use run_protections::{
     ProtectOutcome, RUN_PROTECTIONS_SCHEMA_VERSION, RunProtectionLease, RunProtectionStore,
     RunProtectionStoreError,
+};
+pub use usage_quota_alerts::{
+    USAGE_QUOTA_ALERT_RECEIPT_SCHEMA_VERSION, UsageQuotaAlertDeliveryState,
+    UsageQuotaAlertHistory, UsageQuotaAlertLookup, UsageQuotaAlertReadIssue,
+    UsageQuotaAlertReceipt, UsageQuotaAlertRecordOutcome, UsageQuotaAlertStore,
+    UsageQuotaAlertStoreError,
 };
 pub use run_purge_audit::{
     RUN_PURGE_AUDIT_SCHEMA_VERSION, RunPurgeAuditError, RunPurgeAuditHistory, RunPurgeAuditIntent,
