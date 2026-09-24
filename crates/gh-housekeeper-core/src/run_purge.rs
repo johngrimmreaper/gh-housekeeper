@@ -529,7 +529,7 @@ impl RunPurgeRevalidationService {
                         }
                     }
                     Err(error) => {
-                        if matches!(error, ProviderError::RateLimited { .. }) {
+                        if matches!(&error, ProviderError::RateLimited { .. }) {
                             rate_limit_halt_reason = Some(
                                 "revalidation halted by GitHub API rate-limit guard after provider rate limit; later targets were not checked"
                                     .to_owned(),
@@ -548,7 +548,7 @@ impl RunPurgeRevalidationService {
                     },
                 },
                 Err(error) => {
-                    if matches!(error, ProviderError::RateLimited { .. }) {
+                    if matches!(&error, ProviderError::RateLimited { .. }) {
                         rate_limit_halt_reason = Some(
                             "revalidation halted by GitHub API rate-limit guard after provider rate limit; later targets were not checked"
                                 .to_owned(),
