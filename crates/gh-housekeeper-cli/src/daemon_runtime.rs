@@ -3,8 +3,10 @@ use chrono::{DateTime, Datelike, Utc};
 use gh_housekeeper_core::{
     AccountUsageAvailability, AccountUsagePollingCycle, AccountUsagePollingService,
     AccountUsageProvider, ArtifactProvider, BillingOwner, BillingOwnerKind, BillingPeriod,
-    DaemonCapabilities, DaemonEvent, DaemonRuntimeState, DaemonStatus,
-    MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler, MonitoringSchedulerEvent,
+    DaemonCapabilities, DaemonCommand, DaemonControlError, DaemonControlErrorCode, DaemonEvent,
+    DaemonEventSubscriptionRequest, DaemonReply, DaemonRequest, DaemonResponse,
+    DaemonResponseOutcome, DaemonRuntimeState, DaemonStatus, MonitoringNotificationSignal,
+    MonitoringRunner, MonitoringScheduler, MonitoringSchedulerCancellation, MonitoringSchedulerEvent,
     MonitoringSchedulerShutdown, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, ScanOptions, ScanScope, StoragePressureLevel,
     UsageQuotaNotificationCandidate, UsageQuotaNotificationDelivery, UsageQuotaNotificationOutcome,
@@ -41,6 +43,112 @@ pub struct ForegroundDaemonOptions {
     pub max_attempts: Option<u64>,
     pub output: DaemonOutputFormat,
     pub presentation: DaemonPresentation,
+}
+
+#[derive(Clone)]
+pub struct DaemonControlHandle {
+    status: Arc<Mutex<DaemonStatus>>,
+    cancellation: MonitoringSchedulerCancellation,
+    events: tokio::sync::broadcast::Sender<DaemonEvent>,
+}
+
+pub struct DaemonEventSubscription {
+    receiver: tokio::sync::broadcast::Receiver<DaemonEvent>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DaemonEventSubscriptionError {
+    Closed,
+    Lagged(u64),
+}
+
+impl DaemonControlHandle {
+    fn new(
+        status: Arc<Mutex<DaemonStatus>>,
+        cancellation: MonitoringSchedulerCancellation,
+    ) -> Self {
+        let (events, _) = tokio::sync::broadcast::channel(128);
+        Self {
+            status,
+            cancellation,
+            events,
+        }
+    }
+
+    pub fn status(&self) -> DaemonStatus {
+        lock_status(&self.status).clone()
+    }
+
+    pub fn handle_request(&self, request: &DaemonRequest) -> DaemonResponse {
+        if let Err(error) = request.validate_schema() {
+            return DaemonResponse::error(request, error);
+        }
+
+        match &request.command {
+            DaemonCommand::Status => DaemonResponse::ok(
+                request,
+                DaemonReply::Status {
+                    status: self.status(),
+                },
+            ),
+            DaemonCommand::Shutdown => {
+                self.shutdown();
+                DaemonResponse::ok(request, DaemonReply::ShutdownAccepted)
+            }
+            DaemonCommand::RunMonitoringNow => DaemonResponse::error(
+                request,
+                DaemonControlError::unsupported(
+                    "run_monitoring_now is unavailable until MonitoringScheduler exposes a safe wake/run-now control",
+                ),
+            ),
+        }
+    }
+
+    pub fn shutdown(&self) {
+        let changed = {
+            let mut current = lock_status(&self.status);
+            let changed = current.state != DaemonRuntimeState::Stopping;
+            current.state = DaemonRuntimeState::Stopping;
+            current.next_monitoring_at = None;
+            current.next_account_usage_at = None;
+            changed
+        };
+
+        self.cancellation.cancel();
+        if changed {
+            self.publish(DaemonEvent::StatusChanged {
+                status: self.status(),
+            });
+        }
+    }
+
+    pub fn subscribe(
+        &self,
+        request: &DaemonEventSubscriptionRequest,
+    ) -> Result<DaemonEventSubscription, DaemonControlError> {
+        request.validate_schema()?;
+        Ok(DaemonEventSubscription {
+            receiver: self.events.subscribe(),
+        })
+    }
+
+    fn publish(&self, event: DaemonEvent) {
+        let _ = self.events.send(event);
+    }
+}
+
+impl DaemonEventSubscription {
+    pub async fn recv(&mut self) -> Result<DaemonEvent, DaemonEventSubscriptionError> {
+        match self.receiver.recv().await {
+            Ok(event) => Ok(event),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                Err(DaemonEventSubscriptionError::Closed)
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                Err(DaemonEventSubscriptionError::Lagged(count))
+            }
+        }
+    }
 }
 
 pub async fn run_foreground_daemon(
@@ -119,8 +227,10 @@ pub async fn run_foreground_daemon(
             .context("persisted monitoring baseline is incompatible with this scan")?;
     }
 
+    let (cancellation, shutdown) = monitoring_scheduler_cancellation();
     let started_at = Utc::now();
     let status = Arc::new(Mutex::new(DaemonStatus::starting(started_at)));
+    let control = DaemonControlHandle::new(Arc::clone(&status), cancellation.clone());
     {
         let mut current = lock_status(&status);
         current.state = DaemonRuntimeState::Running;
@@ -141,22 +251,19 @@ pub async fn run_foreground_daemon(
     }
 
     let output_lock = Arc::new(Mutex::new(()));
+    let running_event = DaemonEvent::StatusChanged {
+        status: control.status(),
+    };
+    control.publish(running_event.clone());
     if matches!(options.presentation, DaemonPresentation::Protocol) {
-        emit_daemon_event(
-            options.output,
-            &output_lock,
-            &DaemonEvent::StatusChanged {
-                status: lock_status(&status).clone(),
-            },
-        );
+        emit_daemon_event(options.output, &output_lock, &running_event);
     }
 
-    let (cancellation, shutdown) = monitoring_scheduler_cancellation();
     let account_usage_shutdown = cancellation.subscribe();
-    let signal_cancellation = cancellation.clone();
+    let signal_control = control.clone();
     let signal_task = tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            signal_cancellation.cancel();
+            signal_control.shutdown();
         }
     });
 
@@ -165,7 +272,7 @@ pub async fn run_foreground_daemon(
     } else {
         let account_usage_provider: Arc<dyn AccountUsageProvider> = provider;
         let account_usage_paths = paths.clone();
-        let account_status = Arc::clone(&status);
+        let account_control = control.clone();
         let account_output_lock = Arc::clone(&output_lock);
         Some(tokio::spawn(run_account_usage_polling_loop(
             account_usage_provider,
@@ -177,7 +284,7 @@ pub async fn run_foreground_daemon(
             account_usage_shutdown,
             options.output,
             options.presentation,
-            account_status,
+            account_control,
             account_output_lock,
         )))
     };
@@ -225,6 +332,7 @@ pub async fn run_foreground_daemon(
     }
 
     let scheduler_status = Arc::clone(&status);
+    let scheduler_control = control.clone();
     let scheduler_output_lock = Arc::clone(&output_lock);
     let output = options.output;
     let presentation = options.presentation;
@@ -232,6 +340,9 @@ pub async fn run_foreground_daemon(
         .run(shutdown, options.max_attempts, move |event| {
             let protocol_events =
                 update_status_for_monitoring_event(&scheduler_status, &event, interval);
+            for protocol_event in &protocol_events {
+                scheduler_control.publish(protocol_event.clone());
+            }
 
             match presentation {
                 DaemonPresentation::MonitorWatch => {
@@ -270,12 +381,7 @@ pub async fn run_foreground_daemon(
         }
     }
 
-    {
-        let mut current = lock_status(&status);
-        current.state = DaemonRuntimeState::Stopping;
-        current.next_monitoring_at = None;
-        current.next_account_usage_at = None;
-    }
+    control.shutdown();
 
     match options.presentation {
         DaemonPresentation::MonitorWatch => {
@@ -287,7 +393,7 @@ pub async fn run_foreground_daemon(
             options.output,
             &output_lock,
             &DaemonEvent::StatusChanged {
-                status: lock_status(&status).clone(),
+                status: control.status(),
             },
         ),
     }
@@ -330,7 +436,7 @@ async fn run_account_usage_polling_loop(
     mut shutdown: MonitoringSchedulerShutdown,
     output: DaemonOutputFormat,
     presentation: DaemonPresentation,
-    status: Arc<Mutex<DaemonStatus>>,
+    control: DaemonControlHandle,
     output_lock: Arc<Mutex<()>>,
 ) {
     let service = AccountUsagePollingService::new(
@@ -374,29 +480,26 @@ async fn run_account_usage_polling_loop(
             .await;
         let next_check_at = next_check_at(evaluated_at, interval);
         {
-            let mut current = lock_status(&status);
+            let mut current = lock_status(&control.status);
             current.record_account_usage_cycle(&cycle, next_check_at);
         }
+
+        let cycle_event = DaemonEvent::AccountUsageCycle {
+            cycle: cycle.clone(),
+        };
+        let status_event = DaemonEvent::StatusChanged {
+            status: control.status(),
+        };
+        control.publish(cycle_event.clone());
+        control.publish(status_event.clone());
 
         match presentation {
             DaemonPresentation::MonitorWatch => with_output_lock(&output_lock, || {
                 print_account_usage_polling_cycle(output, &cycle);
             }),
             DaemonPresentation::Protocol => {
-                emit_daemon_event(
-                    output,
-                    &output_lock,
-                    &DaemonEvent::AccountUsageCycle {
-                        cycle: cycle.clone(),
-                    },
-                );
-                emit_daemon_event(
-                    output,
-                    &output_lock,
-                    &DaemonEvent::StatusChanged {
-                        status: lock_status(&status).clone(),
-                    },
-                );
+                emit_daemon_event(output, &output_lock, &cycle_event);
+                emit_daemon_event(output, &output_lock, &status_event);
             }
         }
 
@@ -820,5 +923,100 @@ fn print_monitoring_read_issues(issues: &[MonitoringReadIssue]) {
     eprintln!("Monitoring history read issues:");
     for issue in issues {
         eprintln!("  {}: {}", issue.path.display(), issue.message);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn control_fixture() -> (DaemonControlHandle, MonitoringSchedulerShutdown) {
+        let (cancellation, shutdown) = monitoring_scheduler_cancellation();
+        let status = Arc::new(Mutex::new(DaemonStatus::starting(Utc::now())));
+        {
+            let mut current = lock_status(&status);
+            current.state = DaemonRuntimeState::Running;
+        }
+        (DaemonControlHandle::new(status, cancellation), shutdown)
+    }
+
+    #[test]
+    fn control_status_uses_live_runtime_snapshot() {
+        let (control, _) = control_fixture();
+        {
+            let mut current = lock_status(&control.status);
+            current.next_monitoring_at = Some(Utc::now());
+        }
+
+        let request = DaemonRequest::new("status-1", DaemonCommand::Status);
+        let response = control.handle_request(&request);
+        match response.outcome {
+            DaemonResponseOutcome::Ok {
+                reply: DaemonReply::Status { status },
+            } => {
+                assert_eq!(status.state, DaemonRuntimeState::Running);
+                assert!(status.next_monitoring_at.is_some());
+            }
+            other => panic!("unexpected status response: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shutdown_is_graceful_and_idempotent() {
+        let (control, shutdown) = control_fixture();
+        assert!(!shutdown.is_cancelled());
+
+        control.shutdown();
+        control.shutdown();
+
+        assert_eq!(control.status().state, DaemonRuntimeState::Stopping);
+        assert!(shutdown.is_cancelled());
+    }
+
+    #[test]
+    fn run_monitoring_now_is_explicitly_unsupported() {
+        let (control, _) = control_fixture();
+        let request = DaemonRequest::new("run-now-1", DaemonCommand::RunMonitoringNow);
+        let response = control.handle_request(&request);
+
+        match response.outcome {
+            DaemonResponseOutcome::Error { error } => {
+                assert_eq!(error.code, DaemonControlErrorCode::Unsupported);
+            }
+            other => panic!("unexpected run-now response: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscription_uses_existing_daemon_events() {
+        let (control, _) = control_fixture();
+        let request = DaemonEventSubscriptionRequest::new("events-1");
+        let mut subscription = control.subscribe(&request).unwrap();
+
+        control.shutdown();
+
+        let event = subscription.recv().await.unwrap();
+        assert!(matches!(
+            event,
+            DaemonEvent::StatusChanged { status }
+                if status.state == DaemonRuntimeState::Stopping
+        ));
+    }
+
+    #[test]
+    fn schema_mismatch_fails_before_command_execution() {
+        let (control, shutdown) = control_fixture();
+        let mut request = DaemonRequest::new("shutdown-1", DaemonCommand::Shutdown);
+        request.schema_version += 1;
+
+        let response = control.handle_request(&request);
+        match response.outcome {
+            DaemonResponseOutcome::Error { error } => {
+                assert_eq!(error.code, DaemonControlErrorCode::SchemaMismatch);
+            }
+            other => panic!("unexpected schema-mismatch response: {other:?}"),
+        }
+        assert!(!shutdown.is_cancelled());
+        assert_eq!(control.status().state, DaemonRuntimeState::Running);
     }
 }
