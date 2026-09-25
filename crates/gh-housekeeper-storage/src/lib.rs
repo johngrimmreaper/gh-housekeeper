@@ -2,6 +2,7 @@ mod account_usage_history;
 mod audit;
 mod cache_purge_audit;
 mod config;
+mod daemon_lock;
 mod monitoring_history;
 mod run_protections;
 mod run_purge_audit;
@@ -23,6 +24,7 @@ pub use config::{
     AccountUsageAllowanceConfig, AccountUsageMonitoringConfig, AppConfig, CONFIG_SCHEMA_VERSION,
     ConfigError, ConfigStore, LoadedConfig, MonitoringConfig,
 };
+pub use daemon_lock::{DaemonInstanceLock, DaemonInstanceLockError};
 pub use monitoring_history::{
     MONITORING_SAMPLE_SCHEMA_VERSION, MonitoringBaselineLookup, MonitoringHistory,
     MonitoringHistoryError, MonitoringHistoryStore, MonitoringReadIssue, MonitoringSample,
