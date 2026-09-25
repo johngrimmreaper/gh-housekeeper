@@ -182,7 +182,7 @@ The GitHub provider implements the capability with the account-level billing usa
 
 Storage uses a separately versioned `AccountUsageHistoryStore` rooted at `account-usage/v1/`. The existing `monitoring/v1/` schema is unchanged. History filtering keys on provider, billing-owner kind/login, and billing period, so month boundaries and distinct accounts do not form one accidental series.
 
-No allowance or quota is currently authoritative in this model. A later evaluator may derive remaining allowance and warning/critical state only when paired with an allowance whose provenance is explicit (provider-reported or user-configured). The billing usage capability has no cleanup planning, authorization, revalidation, or DELETE dependency.
+No provider-wide GitHub plan allowance is authoritative in this model. The implemented strict evaluator derives remaining quantity and warning/critical state only when paired with an explicit allowance whose provenance is provider-reported or user-configured; it does not infer a plan entitlement. The billing usage capability has no cleanup planning, authorization, revalidation, or DELETE dependency.
 
 The CLI exposes this boundary through `monitor account once` and `monitor account history`. The one-shot query requires an explicit billing owner and monthly period, then persists the observation. History requires the same owner/period key and reads local state only; it does not construct a provider. Neither command starts a scheduler or background process.
 
