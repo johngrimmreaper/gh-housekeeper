@@ -9,6 +9,10 @@ repository.workspace = true
 name = "gh-housekeeper"
 path = "src/main.rs"
 
+[[bin]]
+name = "gh-housekeeperd"
+path = "src/bin/gh-housekeeperd.rs"
+
 [dependencies]
 async-trait.workspace = true
 anyhow.workspace = true
