@@ -184,9 +184,8 @@ where
                         state: UsageQuotaAlertReceiptState::Delivered,
                         ..
                     }) => {
-                        notifications.push(UsageQuotaNotificationOutcome::SuppressedDuplicate {
-                            key,
-                        });
+                        notifications
+                            .push(UsageQuotaNotificationOutcome::SuppressedDuplicate { key });
                     }
                     Ok(UsageQuotaAlertReceiptLookup {
                         state: UsageQuotaAlertReceiptState::Unknown,
@@ -259,9 +258,7 @@ fn notification_candidate(
     }
 }
 
-fn unique_billing_owners(
-    allowances: &[(BillingOwner, UsageAllowance)],
-) -> Vec<BillingOwner> {
+fn unique_billing_owners(allowances: &[(BillingOwner, UsageAllowance)]) -> Vec<BillingOwner> {
     let mut owners = Vec::new();
     for (owner, _) in allowances {
         if !owners
@@ -412,10 +409,7 @@ mod tests {
 
     #[async_trait]
     impl UsageQuotaNotificationDelivery for FakeDelivery {
-        async fn deliver(
-            &self,
-            candidate: &UsageQuotaNotificationCandidate,
-        ) -> Result<(), String> {
+        async fn deliver(&self, candidate: &UsageQuotaNotificationCandidate) -> Result<(), String> {
             if self.fail.load(Ordering::SeqCst) {
                 return Err("fixture delivery failure".to_owned());
             }
@@ -487,7 +481,10 @@ mod tests {
         );
         let configured = vec![
             (owner("example-user"), allowance("linux", "actions_linux")),
-            (owner("example-user"), allowance("windows", "actions_windows")),
+            (
+                owner("example-user"),
+                allowance("windows", "actions_windows"),
+            ),
         ];
 
         let cycle = service
