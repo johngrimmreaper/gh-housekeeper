@@ -763,11 +763,11 @@ mod tests {
 
         assert_eq!(observations.lock().unwrap().len(), 1);
         assert!(matches!(
-            cycle.owners[0].observation.availability,
+            &cycle.owners[0].observation.availability,
             AccountUsageAvailability::Unknown { .. }
         ));
         assert!(matches!(
-            cycle.owners[0].evaluations[0].status,
+            &cycle.owners[0].evaluations[0].status,
             UsageQuotaStatus::Unknown {
                 reason: UsageQuotaUnknownReason::UpstreamUnknown,
                 ..
@@ -801,7 +801,7 @@ mod tests {
             .await;
 
         assert!(matches!(
-            cycle.owners[0].evaluations[0].status,
+            &cycle.owners[0].evaluations[0].status,
             UsageQuotaStatus::Unknown {
                 reason: UsageQuotaUnknownReason::StaleObservation,
                 ..
