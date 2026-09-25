@@ -1,14 +1,17 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Datelike, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_cli::{
     DaemonOutputFormat, DaemonPresentation, ForegroundDaemonOptions, run_foreground_daemon,
 };
+#[cfg(unix)]
+use gh_housekeeper_cli::send_local_daemon_request;
 use gh_housekeeper_core::{
     AccountUsageAvailability, AccountUsagePollingCycle, AccountUsagePollingService,
     AccountUsageProvider, ActionsCache, Artifact, ArtifactProvider, BillingOwner, BillingOwnerKind,
     BillingPeriod, CacheAggregationKey, CacheInventoryService, CacheProvider,
     CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
+    DaemonCommand as DaemonControlCommand, DaemonReply, DaemonResponseOutcome,
     CachePurgePlanningService, CachePurgeProvider, CachePurgeRevalidationService,
     CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
@@ -90,6 +93,8 @@ enum Command {
     Config(ConfigCommand),
     /// Scan a scope and classify current artifact storage against configured thresholds.
     Status(StatusCommand),
+    /// Query or control the running local gh-housekeeper daemon.
+    Daemon(DaemonCliCommand),
     /// Run or inspect durable monitoring samples.
     Monitor(MonitorCommand),
 }
@@ -758,6 +763,32 @@ struct StatusCommand {
 }
 
 #[derive(Args)]
+struct DaemonCliCommand {
+    #[command(subcommand)]
+    action: DaemonAction,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Query the live in-memory status of the running local daemon.
+    Status(DaemonStatusCommand),
+    /// Request graceful shutdown through the daemon's shared cancellation lifecycle.
+    Shutdown(DaemonShutdownCommand),
+}
+
+#[derive(Args)]
+struct DaemonStatusCommand {
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
+struct DaemonShutdownCommand {
+    #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+    format: OutputFormat,
+}
+
+#[derive(Args)]
 struct MonitorCommand {
     #[command(subcommand)]
     action: MonitorAction,
@@ -959,6 +990,7 @@ async fn main() -> Result<()> {
         Command::History(command) => run_history(command),
         Command::Config(command) => run_config(command),
         Command::Status(command) => run_status(provider()?, command).await,
+        Command::Daemon(command) => run_daemon_control(command).await,
         Command::Monitor(command) => match command.action {
             MonitorAction::Account(command) => match command.action {
                 MonitorAccountAction::Once(command) => {
@@ -1022,6 +1054,141 @@ fn run_config(command: ConfigCommand) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_daemon_control(command: DaemonCliCommand) -> Result<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+        bail!("local daemon control is not yet supported on this platform");
+    }
+
+    #[cfg(unix)]
+    {
+        match command.action {
+            DaemonAction::Status(command) => run_daemon_status(command).await,
+            DaemonAction::Shutdown(command) => run_daemon_shutdown(command).await,
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn run_daemon_status(command: DaemonStatusCommand) -> Result<()> {
+    let response = send_local_daemon_request(DaemonControlCommand::Status).await?;
+    match &response.outcome {
+        DaemonResponseOutcome::Ok {
+            reply: DaemonReply::Status { status },
+        } => match command.format {
+            OutputFormat::Json => {
+                println!("{}", serde_json::to_string_pretty(status)?);
+                Ok(())
+            }
+            OutputFormat::Table => {
+                println!("Daemon status");
+                println!("State:                 {:?}", status.state);
+                println!(
+                    "Started:               {}",
+                    status.started_at.format("%Y-%m-%d %H:%M:%SZ")
+                );
+                println!(
+                    "Account:               {}",
+                    status
+                        .account
+                        .as_ref()
+                        .map(|account| format!("{}:{}", account.provider, account.login))
+                        .unwrap_or_else(|| "<unresolved>".to_owned())
+                );
+                println!(
+                    "Scope:                 {}",
+                    status
+                        .scope
+                        .as_ref()
+                        .map(format_scope)
+                        .unwrap_or_else(|| "<unresolved>".to_owned())
+                );
+                println!(
+                    "Last monitoring:       {}",
+                    format_optional_daemon_time(status.last_monitoring_at)
+                );
+                println!(
+                    "Next monitoring:       {}",
+                    format_optional_daemon_time(status.next_monitoring_at)
+                );
+                println!(
+                    "Last account usage:    {}",
+                    format_optional_daemon_time(status.last_account_usage_at)
+                );
+                println!(
+                    "Next account usage:    {}",
+                    format_optional_daemon_time(status.next_account_usage_at)
+                );
+                println!(
+                    "Automatic cleanup:     {}",
+                    if status.automatic_cleanup_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
+                println!(
+                    "Destructive capability: {}",
+                    if status.capabilities.destructive_cleanup {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                );
+                Ok(())
+            }
+        },
+        DaemonResponseOutcome::Ok { reply } => {
+            bail!("unexpected daemon reply to status request: {reply:?}")
+        }
+        DaemonResponseOutcome::Error { error } => {
+            bail!(
+                "daemon status request failed ({:?}): {}",
+                error.code,
+                error.message
+            )
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn run_daemon_shutdown(command: DaemonShutdownCommand) -> Result<()> {
+    let response = send_local_daemon_request(DaemonControlCommand::Shutdown).await?;
+    match &response.outcome {
+        DaemonResponseOutcome::Ok {
+            reply: DaemonReply::ShutdownAccepted,
+        } => {
+            match command.format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&response)?);
+                }
+                OutputFormat::Table => {
+                    println!("Graceful daemon shutdown requested.");
+                }
+            }
+            Ok(())
+        }
+        DaemonResponseOutcome::Ok { reply } => {
+            bail!("unexpected daemon reply to shutdown request: {reply:?}")
+        }
+        DaemonResponseOutcome::Error { error } => {
+            bail!(
+                "daemon shutdown request failed ({:?}): {}",
+                error.code,
+                error.message
+            )
+        }
+    }
+}
+
+#[cfg(unix)]
+fn format_optional_daemon_time(value: Option<DateTime<Utc>>) -> String {
+    value
+        .map(|value| value.format("%Y-%m-%d %H:%M:%SZ").to_string())
+        .unwrap_or_else(|| "none".to_owned())
 }
 
 async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand) -> Result<()> {
