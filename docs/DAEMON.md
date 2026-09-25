@@ -62,20 +62,31 @@ The CLI should continue to support direct one-shot operation even when no daemon
 
 IPC types belong in provider-neutral application/domain code. Transport-specific code belongs outside the core.
 
-The initial control model should cover:
+The provider-neutral protocol v2 now has versioned serializable request/reply/control types plus the existing `DaemonEvent` event model. The running application layer exposes a `DaemonControlHandle` over the daemon's live `DaemonStatus`, shared scheduler cancellation source, and event publisher.
 
-- daemon status/capabilities;
-- current account and configured scan scope;
-- current/next scheduler state;
-- trigger one monitoring iteration;
-- request a read-only policy evaluation;
-- request an automated cleanup cycle only when automation policy explicitly permits it;
-- graceful shutdown for user-owned daemon instances;
-- event subscription for monitoring transitions and cleanup results.
+The first concrete transport is now implemented on Unix as a user-local Unix-domain socket. It is request/reply only in this milestone:
 
-Linux can expose this model over session D-Bus. Other transports can implement the same logical protocol later, such as Unix-domain sockets, Windows named pipes, or a local-only equivalent.
+- `Status` returns the current in-memory `DaemonStatus`;
+- `Shutdown` triggers the same graceful cancellation lifecycle used by Ctrl-C;
+- `RunMonitoringNow` returns structured `unsupported` rather than bypassing `MonitoringScheduler`;
+- schema mismatches and malformed requests return structured protocol errors.
 
-Transport identity is not deletion authority. Any destructive request still produces an immutable plan and goes through the normal authorization/automation policy, revalidation, write-ahead intent, execution, verification, and audit.
+The CLI exposes the first two operations directly:
+
+```text
+gh-housekeeper daemon status
+gh-housekeeper daemon status --format json
+gh-housekeeper daemon shutdown
+gh-housekeeper daemon shutdown --format json
+```
+
+These local control commands do not discover GitHub credentials and do not contact GitHub.
+
+On Linux, the socket prefers `$XDG_RUNTIME_DIR/gh-housekeeper/control-v2.sock` when `XDG_RUNTIME_DIR` is absolute. Otherwise it falls back to the existing daemon state directory. The endpoint directory is restricted to mode `0700` and the socket to `0600`. Symbolic-link and non-socket endpoint collisions are refused. An existing socket is probed before stale recovery; a live listener is never replaced. The existing `DaemonInstanceLock` remains the singleton/process-ownership authority, not the socket pathname.
+
+Event subscription already has a transport-neutral boundary and continues to use `DaemonEvent`, but event streaming over the Unix socket is not implemented yet. Session D-Bus, Windows named pipes, and other local transports can implement the same logical protocol later without changing the daemon process model.
+
+The broader control model may later add safe scheduler wake/run-now, read-only policy evaluation, and explicitly authorized automation. Transport identity is never deletion authority. Any destructive request must still produce an immutable plan and go through the normal authorization/automation policy, revalidation, write-ahead intent, execution, verification, and audit.
 
 ## Notification adapters
 
@@ -210,11 +221,11 @@ Long-running foreground monitoring acquires the stable `daemon/instance.lock` fi
 
 Explicit `monitor account once` and `monitor account history` semantics are unchanged: they do not start polling, do not send automatic notifications, and do not write delivery receipts. The strict allowance evaluator is still not automatically attached to GitHub's plan-wide Actions allowance, and no plan-specific entitlement is hard-coded.
 
-There is still no dedicated `gh-housekeeperd` binary, desktop notification adapter, `systemd --user` installation, D-Bus transport, tray, or GUI wiring. Those future launch paths must reuse the shared polling service, shutdown lifecycle, receipt rules, and single-instance policy rather than create a parallel daemon or scheduler.
+The dedicated `gh-housekeeperd` binary and Unix local request/reply control socket now exist. There is still no desktop notification adapter, `systemd --user` installation, D-Bus transport, tray, GUI wiring, or automatic cleanup authority. Those future launch paths must reuse the shared polling service, shutdown lifecycle, receipt rules, control handle, and single-instance policy rather than create a parallel daemon or scheduler.
 
 ## Daemon protocol v2 account-usage status checkpoint
 
-The provider-neutral daemon protocol is now schema version 2. This is an additive status/event checkpoint for the future dedicated `gh-housekeeperd` process; it does **not** mean that the standalone daemon binary or IPC transport exists yet.
+The provider-neutral daemon protocol is schema version 2. The dedicated `gh-housekeeperd` process and the first Unix request/reply transport now consume this protocol. The protocol remains transport-neutral; the Unix socket is an application/platform adapter rather than a second protocol model.
 
 Version 2 adds:
 
@@ -313,19 +324,31 @@ The runtime lives once in the CLI package library and is called by both binaries
 
 Still future:
 
-- durable/queryable IPC transport for status and commands;
 - service-manager/autostart integration;
 - desktop notification/tray adapters;
 - automated cleanup, which remains disabled.
 
-### Stage 3 — local IPC
+### Stage 3 — local IPC partially implemented
 
-- transport-neutral daemon client/server traits;
+Implemented:
+
+- transport-neutral versioned request/reply/error contract in core;
+- live runtime `DaemonControlHandle`;
+- transport-neutral event subscription boundary using `DaemonEvent`;
+- Unix-domain request/reply socket with bounded framing and local permissions;
+- safe stale-socket recovery without replacing a live listener;
+- live status query;
+- graceful shutdown request;
+- CLI connection discovery through the standard local endpoint;
+- `gh-housekeeper daemon status` and `gh-housekeeper daemon shutdown`.
+
+Still future:
+
+- event streaming over the concrete Unix transport;
+- safe scheduler wake/run-now support;
 - Linux session D-Bus adapter;
-- status query;
-- run-now monitoring request;
-- event subscription;
-- GUI/CLI connection discovery;
+- Windows named-pipe/local transport;
+- GUI connection discovery;
 - explicit GUI prompt before spawning an absent user daemon.
 
 ### Stage 4 — multi-resource monitoring
