@@ -473,7 +473,9 @@ fn next_check_at(at: DateTime<Utc>, interval: Duration) -> Option<DateTime<Utc>>
 }
 
 fn lock_status(status: &Arc<Mutex<DaemonStatus>>) -> MutexGuard<'_, DaemonStatus> {
-    status.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn with_output_lock(lock: &Arc<Mutex<()>>, action: impl FnOnce()) {
@@ -490,7 +492,8 @@ fn emit_daemon_event(
         DaemonOutputFormat::Json => {
             println!(
                 "{}",
-                serde_json::to_string(event).expect("daemon event JSON serialization should succeed")
+                serde_json::to_string(event)
+                    .expect("daemon event JSON serialization should succeed")
             );
         }
         DaemonOutputFormat::Table => print_daemon_event_table(event),
@@ -710,7 +713,10 @@ fn print_monitoring_scheduler_event(
     }
 }
 
-fn print_monitoring_scheduler_summary(format: DaemonOutputFormat, summary: MonitoringSchedulerSummary) {
+fn print_monitoring_scheduler_summary(
+    format: DaemonOutputFormat,
+    summary: MonitoringSchedulerSummary,
+) {
     match format {
         DaemonOutputFormat::Table => {
             println!();
