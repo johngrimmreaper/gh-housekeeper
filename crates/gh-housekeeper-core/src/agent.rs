@@ -44,7 +44,7 @@ impl DaemonAccountUsageSummary {
 
         for owner in &cycle.owners {
             summary.owner_count += 1;
-            match owner.observation.availability {
+            match &owner.observation.availability {
                 AccountUsageAvailability::Available => summary.available_owner_count += 1,
                 AccountUsageAvailability::Unsupported { .. }
                 | AccountUsageAvailability::Unknown { .. } => {
