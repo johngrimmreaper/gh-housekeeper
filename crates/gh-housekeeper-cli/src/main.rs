@@ -4,23 +4,21 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
     AccountUsageAvailability, AccountUsagePollingCycle, AccountUsagePollingService,
     AccountUsageProvider, ActionsCache, Artifact, ArtifactProvider, BillingOwner, BillingOwnerKind,
-    BillingPeriod, CacheAggregationKey, CacheInventoryService,
-    CacheProvider, CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
+    BillingPeriod, CacheAggregationKey, CacheInventoryService, CacheProvider,
+    CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
     CachePurgePlanningService, CachePurgeProvider, CachePurgeRevalidationService,
     CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
     MonitoringSchedulerEvent, MonitoringSchedulerShutdown, MonitoringSchedulerSummary,
-    MonitoringService,
-    PressureTransitionEvaluation, RepositoryRef, RevalidationService, RevalidationState,
-    RunProtection, RunProtectionKey, RunPurgeExecutionService, RunPurgeExecutionState,
-    RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService, RunPurgeSelection,
-    RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel,
-    UsageAllowanceProvenance, UsageQuotaEvaluation, UsageQuotaLevel,
-    UsageQuotaNotificationCandidate, UsageQuotaNotificationDelivery,
-    UsageQuotaNotificationOutcome, UsageQuotaStatus, UsageQuotaThreshold, WorkflowRun,
-    WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
-    evaluate_usage_quota, format_bytes, matches_glob, monitoring_scheduler_cancellation,
-    parse_duration,
+    MonitoringService, PressureTransitionEvaluation, RepositoryRef, RevalidationService,
+    RevalidationState, RunProtection, RunProtectionKey, RunPurgeExecutionService,
+    RunPurgeExecutionState, RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService,
+    RunPurgeSelection, RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket,
+    StoragePressureLevel, UsageAllowanceProvenance, UsageQuotaEvaluation, UsageQuotaLevel,
+    UsageQuotaNotificationCandidate, UsageQuotaNotificationDelivery, UsageQuotaNotificationOutcome,
+    UsageQuotaStatus, UsageQuotaThreshold, WorkflowRun, WorkflowRunInventoryService,
+    WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches, evaluate_usage_quota,
+    format_bytes, matches_glob, monitoring_scheduler_cancellation, parse_duration,
 };
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
@@ -28,9 +26,8 @@ use gh_housekeeper_storage::{
     AccountUsageHistoryStore, AccountUsageReadIssue, AppConfig, AuditReadIssue, AuditRecord,
     AuditStore, CachePurgeAuditReadIssue, CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore,
     DaemonInstanceLock, MonitoringConfig, MonitoringHistoryStore, MonitoringReadIssue,
-    RunProtectionStore,
-    RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
-    UsageQuotaAlertStore,
+    RunProtectionStore, RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore,
+    StatePaths, UsageQuotaAlertStore,
 };
 use serde_json::json;
 use std::{
@@ -1205,8 +1202,10 @@ async fn run_monitor_watch(
     let baseline_report = baseline_lookup.sample.map(|sample| sample.report);
     print_monitoring_read_issues(&baseline_lookup.issues);
 
-    let runner =
-        MonitoringRunner::new(MonitoringService::new(Arc::clone(&artifact_provider)), store);
+    let runner = MonitoringRunner::new(
+        MonitoringService::new(Arc::clone(&artifact_provider)),
+        store,
+    );
     let mut scheduler =
         MonitoringScheduler::new(runner, scan_options, thresholds, interval, interval)
             .context("invalid monitoring scheduler configuration")?;
