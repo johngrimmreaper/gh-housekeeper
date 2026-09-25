@@ -1,6 +1,9 @@
 use crate::StatePaths;
 use chrono::{DateTime, Utc};
-use gh_housekeeper_core::UsageQuotaAlertKey;
+use gh_housekeeper_core::{
+    UsageQuotaAlertKey, UsageQuotaAlertReceiptLookup, UsageQuotaAlertReceiptState,
+    UsageQuotaAlertReceiptStore,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -307,6 +310,35 @@ impl UsageQuotaAlertStore {
         Err(UsageQuotaAlertStoreError::NameExhausted {
             directory: self.directory.clone(),
         })
+    }
+}
+
+impl UsageQuotaAlertReceiptStore for UsageQuotaAlertStore {
+    fn delivery_lookup(
+        &self,
+        key: &UsageQuotaAlertKey,
+    ) -> Result<UsageQuotaAlertReceiptLookup, String> {
+        let lookup = self.lookup(key).map_err(|error| error.to_string())?;
+        let state = match lookup.state {
+            UsageQuotaAlertDeliveryState::Delivered => UsageQuotaAlertReceiptState::Delivered,
+            UsageQuotaAlertDeliveryState::NotDelivered => {
+                UsageQuotaAlertReceiptState::NotDelivered
+            }
+            UsageQuotaAlertDeliveryState::Unknown => UsageQuotaAlertReceiptState::Unknown,
+        };
+        let issues = lookup
+            .issues
+            .into_iter()
+            .map(|issue| format!("{}: {}", issue.path.display(), issue.message))
+            .collect();
+
+        Ok(UsageQuotaAlertReceiptLookup { state, issues })
+    }
+
+    fn record_delivered(&self, key: &UsageQuotaAlertKey) -> Result<(), String> {
+        self.record_delivery_if_new(key)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 }
 
