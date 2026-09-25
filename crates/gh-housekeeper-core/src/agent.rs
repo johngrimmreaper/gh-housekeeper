@@ -250,10 +250,7 @@ impl DaemonResponse {
         Self::error_for_request_id(request.request_id.clone(), error)
     }
 
-    pub fn error_for_request_id(
-        request_id: impl Into<String>,
-        error: DaemonControlError,
-    ) -> Self {
+    pub fn error_for_request_id(request_id: impl Into<String>, error: DaemonControlError) -> Self {
         Self {
             schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
             request_id: request_id.into(),
@@ -385,10 +382,7 @@ mod tests {
     #[test]
     fn event_subscription_request_is_versioned() {
         let subscription = DaemonEventSubscriptionRequest::new("subscription-1");
-        assert_eq!(
-            subscription.schema_version,
-            DAEMON_PROTOCOL_SCHEMA_VERSION
-        );
+        assert_eq!(subscription.schema_version, DAEMON_PROTOCOL_SCHEMA_VERSION);
         assert!(subscription.validate_schema().is_ok());
     }
 
