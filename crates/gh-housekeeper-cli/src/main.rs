@@ -1,19 +1,23 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Datelike, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use gh_housekeeper_core::{
-    AccountUsageAvailability, AccountUsageProvider, ActionsCache, Artifact, ArtifactProvider,
-    BillingOwner, BillingOwnerKind, BillingPeriod, CacheAggregationKey, CacheInventoryService,
+    AccountUsageAvailability, AccountUsagePollingCycle, AccountUsagePollingService,
+    AccountUsageProvider, ActionsCache, Artifact, ArtifactProvider, BillingOwner, BillingOwnerKind,
+    BillingPeriod, CacheAggregationKey, CacheInventoryService,
     CacheProvider, CachePurgeExecutionService, CachePurgeExecutionState, CachePurgePlan,
     CachePurgePlanningService, CachePurgeProvider, CachePurgeRevalidationService,
     CachePurgeSelection, CleanupPlan, ExecutionAuthorization, ExecutionService, ExecutionState,
     InventoryService, MonitoringNotificationSignal, MonitoringRunner, MonitoringScheduler,
-    MonitoringSchedulerEvent, MonitoringSchedulerSummary, MonitoringService,
+    MonitoringSchedulerEvent, MonitoringSchedulerShutdown, MonitoringSchedulerSummary,
+    MonitoringService,
     PressureTransitionEvaluation, RepositoryRef, RevalidationService, RevalidationState,
     RunProtection, RunProtectionKey, RunPurgeExecutionService, RunPurgeExecutionState,
     RunPurgePlan, RunPurgePlanningService, RunPurgeRevalidationService, RunPurgeSelection,
     RunPurgeSelectionMode, ScanOptions, ScanScope, StorageBucket, StoragePressureLevel,
-    UsageAllowanceProvenance, UsageQuotaEvaluation, UsageQuotaLevel, UsageQuotaStatus, WorkflowRun,
+    UsageAllowanceProvenance, UsageQuotaEvaluation, UsageQuotaLevel,
+    UsageQuotaNotificationCandidate, UsageQuotaNotificationDelivery,
+    UsageQuotaNotificationOutcome, UsageQuotaStatus, UsageQuotaThreshold, WorkflowRun,
     WorkflowRunInventoryService, WorkflowRunProvider, WorkflowRunPurgeProvider, aggregate_caches,
     evaluate_usage_quota, format_bytes, matches_glob, monitoring_scheduler_cancellation,
     parse_duration,
@@ -23,8 +27,10 @@ use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
     AccountUsageHistoryStore, AccountUsageReadIssue, AppConfig, AuditReadIssue, AuditRecord,
     AuditStore, CachePurgeAuditReadIssue, CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore,
-    MonitoringConfig, MonitoringHistoryStore, MonitoringReadIssue, RunProtectionStore,
+    DaemonInstanceLock, MonitoringConfig, MonitoringHistoryStore, MonitoringReadIssue,
+    RunProtectionStore,
     RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
+    UsageQuotaAlertStore,
 };
 use serde_json::json;
 use std::{
@@ -1020,6 +1026,8 @@ fn run_config(command: ConfigCommand) -> Result<()> {
 
 async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand) -> Result<()> {
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let _instance_lock = DaemonInstanceLock::acquire(&paths)
+        .context("failed to acquire the single foreground-daemon instance lock")?;
     let loaded = ConfigStore::from_paths(&paths)
         .load()
         .context("failed to load monitoring configuration")?;
@@ -1028,6 +1036,21 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
         .monitoring
         .thresholds()
         .context("invalid monitoring thresholds")?;
+    let account_usage_config = loaded.config.account_usage.clone();
+    let account_usage_thresholds = account_usage_config
+        .thresholds()
+        .context("invalid account usage thresholds")?;
+    let account_usage_allowances = account_usage_config
+        .domain_allowances()
+        .context("invalid configured account usage allowance")?;
+    let account_usage_interval_seconds = account_usage_config
+        .check_interval_minutes
+        .checked_mul(60)
+        .context("configured account usage interval is too large")?;
+    let account_usage_max_age_seconds = account_usage_config
+        .max_age_minutes
+        .checked_mul(60)
+        .context("configured account usage maximum age is too large")?;
 
     let report = MonitoringService::new(provider)
         .check(command.scope.scan_options(), thresholds)
@@ -1138,7 +1161,7 @@ async fn run_monitor_once(
 }
 
 async fn run_monitor_watch(
-    provider: Arc<dyn ArtifactProvider>,
+    provider: Arc<GithubClient>,
     command: MonitorWatchCommand,
 ) -> Result<()> {
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
@@ -1166,7 +1189,8 @@ async fn run_monitor_watch(
     };
 
     let scan_options = command.scope.scan_options();
-    let account = provider
+    let artifact_provider: Arc<dyn ArtifactProvider> = provider.clone();
+    let account = artifact_provider
         .account()
         .await
         .context("failed to resolve monitoring account identity")?;
@@ -1181,7 +1205,8 @@ async fn run_monitor_watch(
     let baseline_report = baseline_lookup.sample.map(|sample| sample.report);
     print_monitoring_read_issues(&baseline_lookup.issues);
 
-    let runner = MonitoringRunner::new(MonitoringService::new(Arc::clone(&provider)), store);
+    let runner =
+        MonitoringRunner::new(MonitoringService::new(Arc::clone(&artifact_provider)), store);
     let mut scheduler =
         MonitoringScheduler::new(runner, scan_options, thresholds, interval, interval)
             .context("invalid monitoring scheduler configuration")?;
@@ -1192,12 +1217,31 @@ async fn run_monitor_watch(
     }
 
     let (cancellation, shutdown) = monitoring_scheduler_cancellation();
+    let account_usage_shutdown = cancellation.subscribe();
     let signal_cancellation = cancellation.clone();
     let signal_task = tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
             signal_cancellation.cancel();
         }
     });
+
+    let account_usage_task = if account_usage_allowances.is_empty() {
+        None
+    } else {
+        let account_usage_provider: Arc<dyn AccountUsageProvider> = provider;
+        let account_usage_paths = paths.clone();
+        let account_usage_format = command.format;
+        Some(tokio::spawn(run_account_usage_polling_loop(
+            account_usage_provider,
+            account_usage_paths,
+            account_usage_allowances,
+            account_usage_thresholds,
+            Duration::from_secs(account_usage_max_age_seconds),
+            Duration::from_secs(account_usage_interval_seconds),
+            account_usage_shutdown,
+            account_usage_format,
+        )))
+    };
 
     let max_attempts = (command.iterations > 0).then_some(command.iterations);
 
@@ -1221,6 +1265,18 @@ async fn run_monitor_watch(
                 .display()
         );
         println!(
+            "Account usage polling: {}",
+            if account_usage_task.is_some() {
+                format!(
+                    "enabled ({} configured resource(s), {}m interval)",
+                    account_usage_config.allowances.len(),
+                    account_usage_config.check_interval_minutes
+                )
+            } else {
+                "disabled (no configured allowances)".to_owned()
+            }
+        );
+        println!(
             "Baseline:             {}",
             baseline_recorded_at
                 .map(|value| value.format("%Y-%m-%d %H:%M:%SZ").to_string())
@@ -1235,10 +1291,162 @@ async fn run_monitor_watch(
             print_monitoring_scheduler_event(format, event);
         })
         .await;
+    cancellation.cancel();
     signal_task.abort();
+    if let Some(task) = account_usage_task
+        && let Err(error) = task.await
+    {
+        eprintln!("account usage polling task failed to join: {error}");
+    }
 
     print_monitoring_scheduler_summary(format, summary);
     Ok(())
+}
+
+struct ForegroundUsageNotificationDelivery;
+
+#[async_trait::async_trait]
+impl UsageQuotaNotificationDelivery for ForegroundUsageNotificationDelivery {
+    async fn deliver(&self, candidate: &UsageQuotaNotificationCandidate) -> Result<(), String> {
+        let threshold = match candidate.key.threshold {
+            UsageQuotaThreshold::Warning => "warning",
+            UsageQuotaThreshold::Critical => "critical",
+        };
+        let mut stderr = io::stderr().lock();
+        writeln!(
+            stderr,
+            "account usage quota {threshold}: {}:{} resource={} period={:04}-{:02}",
+            candidate.key.owner.provider,
+            candidate.key.owner.login,
+            candidate.key.resource_id,
+            candidate.key.period.year,
+            candidate.key.period.month
+        )
+        .and_then(|_| stderr.flush())
+        .map_err(|error| format!("failed to write foreground quota notification: {error}"))
+    }
+}
+
+async fn run_account_usage_polling_loop(
+    provider: Arc<dyn AccountUsageProvider>,
+    paths: StatePaths,
+    allowances: Vec<(BillingOwner, gh_housekeeper_core::UsageAllowance)>,
+    thresholds: Option<gh_housekeeper_core::UsagePercentageThresholds>,
+    max_age: Duration,
+    interval: Duration,
+    mut shutdown: MonitoringSchedulerShutdown,
+    format: OutputFormat,
+) {
+    let service = AccountUsagePollingService::new(
+        provider,
+        AccountUsageHistoryStore::from_paths(&paths),
+        UsageQuotaAlertStore::from_paths(&paths),
+        ForegroundUsageNotificationDelivery,
+    );
+
+    loop {
+        if shutdown.is_cancelled() {
+            return;
+        }
+
+        let evaluated_at = Utc::now();
+        let period = match billing_period_at(evaluated_at) {
+            Ok(period) => period,
+            Err(error) => {
+                eprintln!("account usage polling could not determine billing period: {error:#}");
+                return;
+            }
+        };
+        let cycle = service
+            .run_cycle(period, evaluated_at, &allowances, thresholds, max_age)
+            .await;
+        print_account_usage_polling_cycle(format, &cycle);
+
+        let sleep = tokio::time::sleep(interval);
+        tokio::pin!(sleep);
+        tokio::select! {
+            _ = &mut sleep => {}
+            _ = shutdown.cancelled() => return,
+        }
+    }
+}
+
+fn billing_period_at(at: DateTime<Utc>) -> Result<BillingPeriod> {
+    let month = u8::try_from(at.month()).context("UTC month does not fit in u8")?;
+    BillingPeriod::monthly(at.year(), month).context("invalid UTC billing period")
+}
+
+fn print_account_usage_polling_cycle(format: OutputFormat, cycle: &AccountUsagePollingCycle) {
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({
+                    "type": "account_usage_cycle",
+                    "cycle": cycle,
+                }))
+                .expect("account usage cycle JSON serialization should succeed")
+            );
+        }
+        OutputFormat::Table => {
+            for owner in &cycle.owners {
+                println!(
+                    "account usage {:04}-{:02} {}:{}:{} state={} persisted={} evaluations={} notifications={}",
+                    cycle.period.year,
+                    cycle.period.month,
+                    owner.owner.provider,
+                    billing_owner_kind_label(owner.owner.kind),
+                    owner.owner.login,
+                    account_usage_availability_label(&owner.observation.availability),
+                    if owner.persisted { "yes" } else { "no" },
+                    owner.evaluations.len(),
+                    owner.notifications.len()
+                );
+                if let Some(error) = &owner.persistence_error {
+                    eprintln!("  account usage persistence error: {error}");
+                }
+                for error in &owner.evaluation_errors {
+                    eprintln!("  account usage evaluation error: {error}");
+                }
+                for notification in &owner.notifications {
+                    match notification {
+                        UsageQuotaNotificationOutcome::Delivered { key } => {
+                            println!(
+                                "  quota notification delivered: resource={} threshold={:?}",
+                                key.resource_id, key.threshold
+                            );
+                        }
+                        UsageQuotaNotificationOutcome::SuppressedDuplicate { key } => {
+                            println!(
+                                "  quota notification suppressed: resource={} threshold={:?}",
+                                key.resource_id, key.threshold
+                            );
+                        }
+                        UsageQuotaNotificationOutcome::FailClosed { key, issues } => {
+                            eprintln!(
+                                "  quota notification fail-closed: resource={} threshold={:?}; {}",
+                                key.resource_id,
+                                key.threshold,
+                                issues.join("; ")
+                            );
+                        }
+                        UsageQuotaNotificationOutcome::DeliveryFailed { key, message } => {
+                            eprintln!(
+                                "  quota notification delivery failed: resource={} threshold={:?}; {message}",
+                                key.resource_id, key.threshold
+                            );
+                        }
+                        UsageQuotaNotificationOutcome::ReceiptFailed { key, message } => {
+                            eprintln!(
+                                "  quota notification receipt failed after delivery: resource={} threshold={:?}; {message}",
+                                key.resource_id, key.threshold
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn print_monitoring_scheduler_event(
