@@ -190,14 +190,27 @@ A `UsageQuotaAlertKey` defines the deduplication identity as billing owner + res
 
 ## Current account-usage implementation checkpoint
 
-The read-only account-usage foundation now exists below the daemon layer:
+The read-only account-usage path now reaches the existing foreground monitoring runtime:
 
 - core types preserve billing owner, monthly period, observation time, source, availability, and individual product/SKU/unit usage values;
 - the GitHub adapter queries the documented personal or organization billing usage summary endpoint and converts permission/rate-limit/transport/response failures into explicit unknown observations;
 - `AccountUsageHistoryStore` persists these observations under `account-usage/v1/`, independently of `monitoring/v1/`;
-- fixture tests cover personal and organization endpoint selection, distinct units/SKUs, permission denial, period/account separation, persistence, corrupt records, and credential-field absence.
+- `AccountUsagePollingService` groups configured allowances by billing owner and makes one provider request per owner + billing period in each cycle;
+- every returned observation, including `unsupported` and `unknown`, is persisted before quota notification is considered;
+- the same observation is reused for all exact-SKU allowances owned by that billing identity;
+- only warning/critical evaluations can become notification candidates; stale, unavailable, ambiguous, healthy, and unconfigured states do not;
+- notification delivery is abstracted behind `UsageQuotaNotificationDelivery`;
+- receipt lookup happens before delivery, indeterminate receipt history fails closed, and `record_delivery_if_new` is called only after successful delivery;
+- a failed delivery writes no receipt, so a later cycle may retry;
+- tests cover owner request grouping, cross-owner separation, same-period deduplication, warning-to-critical transition, billing-period rollover, delivery retry, corrupt-receipt fail-closed behavior, provider-unavailable persistence, stale observations, and singleton locking.
 
-This checkpoint is **not** daemon delivery yet. Explicit `monitor account once` and `monitor account history` CLI surfaces exercise the shared provider/store without starting background work. The strict allowance/threshold evaluator is not automatically attached to GitHub's plan-wide Actions allowance. Schema-2 configuration now supports explicitly user-configured exact-SKU allowances and thresholds, and durable delivery-dedup receipts exist. The explicit CLI may display warning/critical evaluation but writes no delivery receipt. There is still no account-usage polling daemon, desktop notification adapter, `systemd --user` unit, or GUI wiring in this slice. No plan-specific allowance is hard-coded.
+`monitor watch` is the current foreground integration point. Artifact monitoring remains on the existing `MonitoringScheduler`; configured account-usage polling runs at the independent `account_usage.check_interval_minutes` cadence under the same cancellation lifecycle. The runtime determines the current UTC monthly billing period at the orchestration boundary and passes it explicitly to the shared polling service. The current delivery adapter writes the quota notification to foreground stderr and flushes it before the delivery is considered successful; this is intentionally **not** a desktop notification adapter.
+
+Long-running foreground monitoring acquires the stable `daemon/instance.lock` file under the platform state directory and holds the file lock for its lifetime. A second cooperating long-running instance is refused immediately. This closes the cross-process `lookup -> delivery -> receipt` race for the current launch path without falsely recording delivery before the adapter succeeds.
+
+Explicit `monitor account once` and `monitor account history` semantics are unchanged: they do not start polling, do not send automatic notifications, and do not write delivery receipts. The strict allowance evaluator is still not automatically attached to GitHub's plan-wide Actions allowance, and no plan-specific entitlement is hard-coded.
+
+There is still no dedicated `gh-housekeeperd` binary, desktop notification adapter, `systemd --user` installation, D-Bus transport, tray, or GUI wiring. Those future launch paths must reuse the shared polling service, shutdown lifecycle, receipt rules, and single-instance policy rather than create a parallel daemon or scheduler.
 
 ## Daemon status model
 
@@ -260,15 +273,22 @@ Workflow-run `keep_latest` still groups by repository, workflow ID, and branch b
 - README/policy/architecture correction;
 - provider-neutral daemon protocol/lifecycle types.
 
-### Stage 2 — minimal headless daemon
+### Stage 2 — foreground runtime foundation partially implemented
 
-- add `gh-housekeeperd` binary;
-- foreground execution;
-- one monitoring scheduler using existing durable samples;
-- PID/instance ownership and single-instance protection;
-- status and graceful shutdown;
-- structured logs;
-- no automatic deletion yet.
+Implemented in the current `monitor watch` launch path:
+
+- foreground execution using the existing monitoring scheduler;
+- durable monitoring samples;
+- shared graceful cancellation for artifact monitoring and account-usage polling;
+- stable process ownership / single-instance locking;
+- structured table/JSON monitoring events plus foreground quota-notification diagnostics;
+- no automatic deletion.
+
+Still required for the dedicated headless daemon milestone:
+
+- add the `gh-housekeeperd` binary around these shared services;
+- expose the serializable daemon status model from a real daemon process;
+- preserve the same process lock, shutdown, polling, and notification-delivery contracts.
 
 ### Stage 3 — local IPC
 
@@ -282,15 +302,22 @@ Workflow-run `keep_latest` still groups by repository, workflow ID, and branch b
 
 ### Stage 4 — multi-resource monitoring
 
-- monitoring schema v2 for repository inventory and a separately versioned account-usage history;
+Already implemented for the account-usage slice:
+
+- separately versioned account-usage history;
 - read-only billing-usage adapter with explicit unsupported/unknown states;
-- account-level minutes, pooled storage, cache, and optional metered products;
-- period-aware, deduplicated allowance signals delivered only by a running daemon;
+- explicit exact-SKU allowance configuration and freshness checks;
+- period-aware, deduplicated warning/critical delivery in the long-running foreground runtime.
+
+Still future for repository multi-resource observability:
+
+- monitoring schema v2 for repository inventory;
+- trustworthy pooled-storage/cache categories where the provider exposes them;
 - artifact + cache known byte categories;
 - workflow-run/log counts;
 - resource-specific thresholds where useful;
-- migration/read compatibility for v1 samples;
-- notifications based on trustworthy measurements only.
+- migration/read compatibility for v1 repository-monitoring samples;
+- desktop/service notification adapters built on the same delivery abstraction.
 
 ### Stage 5 — automated policy housekeeping
 
