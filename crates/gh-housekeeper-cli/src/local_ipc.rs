@@ -471,7 +471,7 @@ mod tests {
         monitoring_scheduler_cancellation,
     };
     use std::{
-        os::unix::{fs::symlink, net::UnixListener as StdUnixStreamTestListener},
+        os::unix::{fs::symlink, net::UnixListener as StdUnixListener},
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -639,6 +639,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_monitoring_now_remains_explicitly_unsupported() {
+        let path = test_socket_path("run-now");
+        let parent = path.parent().unwrap().to_path_buf();
+        let (control, shutdown) = control_fixture();
+        let server_control = control.clone();
+        let server_path = path.clone();
+        let server = tokio::spawn(async move {
+            run_local_daemon_server(server_path, server_control).await
+        });
+        wait_for_socket(&path).await;
+
+        let response = exchange_request(
+            &path,
+            &DaemonRequest::new("run-now-test", DaemonCommand::RunMonitoringNow),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            response.outcome,
+            DaemonResponseOutcome::Error { error }
+                if error.code == DaemonControlErrorCode::Unsupported
+        ));
+        assert!(!shutdown.is_cancelled());
+        assert_eq!(control.status().state, DaemonRuntimeState::Running);
+
+        control.shutdown();
+        server.await.unwrap().unwrap();
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
     async fn schema_mismatch_is_returned_without_executing_shutdown() {
         let path = test_socket_path("schema");
         let parent = path.parent().unwrap().to_path_buf();
@@ -671,7 +702,7 @@ mod tests {
         let path = test_socket_path("live");
         let parent = path.parent().unwrap().to_path_buf();
         fs::create_dir_all(&parent).unwrap();
-        let listener = StdUnixStreamTestListener::bind(&path).unwrap();
+        let listener = StdUnixListener::bind(&path).unwrap();
 
         let error = prepare_socket_path(&path).unwrap_err();
         assert!(error.to_string().contains("already accepting connections"));
