@@ -498,14 +498,15 @@ mod tests {
         )
     }
 
-    async fn wait_for_socket(path: &Path) {
+    async fn wait_for_server(path: &Path) {
         for _ in 0..100 {
-            if path.exists() {
+            let request = DaemonRequest::new("ready-probe", DaemonCommand::Status);
+            if exchange_request(path, &request).await.is_ok() {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("socket did not appear at {}", path.display());
+        panic!("daemon control server did not become ready at {}", path.display());
     }
 
     #[tokio::test]
@@ -517,7 +518,7 @@ mod tests {
         let server_path = path.clone();
         let server =
             tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
-        wait_for_socket(&path).await;
+        wait_for_server(&path).await;
         let socket_mode = path.symlink_metadata().unwrap().permissions().mode() & 0o777;
         let directory_mode = parent.symlink_metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(socket_mode, 0o600);
@@ -560,7 +561,7 @@ mod tests {
         let server_path = path.clone();
         let server =
             tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
-        wait_for_socket(&path).await;
+        wait_for_server(&path).await;
 
         let response = exchange_request(
             &path,
@@ -589,7 +590,7 @@ mod tests {
         let server_path = path.clone();
         let server =
             tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
-        wait_for_socket(&path).await;
+        wait_for_server(&path).await;
 
         let mut malformed = UnixStream::connect(&path).await.unwrap();
         malformed.write_all(b"{not-json}\n").await.unwrap();
@@ -643,7 +644,7 @@ mod tests {
         let server_path = path.clone();
         let server =
             tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
-        wait_for_socket(&path).await;
+        wait_for_server(&path).await;
 
         let response = exchange_request(
             &path,
@@ -673,7 +674,7 @@ mod tests {
         let server_path = path.clone();
         let server =
             tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
-        wait_for_socket(&path).await;
+        wait_for_server(&path).await;
 
         let mut request = DaemonRequest::new("schema-test", DaemonCommand::Shutdown);
         request.schema_version += 1;
