@@ -321,9 +321,7 @@ impl UsageQuotaAlertReceiptStore for UsageQuotaAlertStore {
         let lookup = self.lookup(key).map_err(|error| error.to_string())?;
         let state = match lookup.state {
             UsageQuotaAlertDeliveryState::Delivered => UsageQuotaAlertReceiptState::Delivered,
-            UsageQuotaAlertDeliveryState::NotDelivered => {
-                UsageQuotaAlertReceiptState::NotDelivered
-            }
+            UsageQuotaAlertDeliveryState::NotDelivered => UsageQuotaAlertReceiptState::NotDelivered,
             UsageQuotaAlertDeliveryState::Unknown => UsageQuotaAlertReceiptState::Unknown,
         };
         let issues = lookup
