@@ -3,9 +3,9 @@ use chrono::{DateTime, Datelike, Utc};
 use gh_housekeeper_core::{
     AccountUsageAvailability, AccountUsagePollingCycle, AccountUsagePollingService,
     AccountUsageProvider, ArtifactProvider, BillingOwner, BillingOwnerKind, BillingPeriod,
-    DaemonCapabilities, DaemonCommand, DaemonControlError, DaemonControlErrorCode, DaemonEvent,
+    DaemonCapabilities, DaemonCommand, DaemonControlError, DaemonEvent,
     DaemonEventSubscriptionRequest, DaemonReply, DaemonRequest, DaemonResponse,
-    DaemonResponseOutcome, DaemonRuntimeState, DaemonStatus, MonitoringNotificationSignal,
+    DaemonRuntimeState, DaemonStatus, MonitoringNotificationSignal,
     MonitoringRunner, MonitoringScheduler, MonitoringSchedulerCancellation, MonitoringSchedulerEvent,
     MonitoringSchedulerShutdown, MonitoringSchedulerSummary, MonitoringService,
     PressureTransitionEvaluation, ScanOptions, ScanScope, StoragePressureLevel,
@@ -125,7 +125,7 @@ impl DaemonControlHandle {
     pub fn subscribe(
         &self,
         request: &DaemonEventSubscriptionRequest,
-    ) -> Result<DaemonEventSubscription, DaemonControlError> {
+    ) -> std::result::Result<DaemonEventSubscription, DaemonControlError> {
         request.validate_schema()?;
         Ok(DaemonEventSubscription {
             receiver: self.events.subscribe(),
@@ -929,6 +929,7 @@ fn print_monitoring_read_issues(issues: &[MonitoringReadIssue]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gh_housekeeper_core::{DaemonControlErrorCode, DaemonResponseOutcome};
 
     fn control_fixture() -> (DaemonControlHandle, MonitoringSchedulerShutdown) {
         let (cancellation, shutdown) = monitoring_scheduler_cancellation();
