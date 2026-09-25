@@ -1,6 +1,8 @@
 use crate::StatePaths;
 use chrono::{DateTime, Utc};
-use gh_housekeeper_core::{AccountUsageObservation, BillingOwner, BillingPeriod};
+use gh_housekeeper_core::{
+    AccountUsageObservation, AccountUsageObservationSink, BillingOwner, BillingPeriod,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
@@ -244,6 +246,14 @@ fn same_owner(left: &BillingOwner, right: &BillingOwner) -> bool {
     left.kind == right.kind
         && left.provider.eq_ignore_ascii_case(&right.provider)
         && left.login.eq_ignore_ascii_case(&right.login)
+}
+
+impl AccountUsageObservationSink for AccountUsageHistoryStore {
+    fn persist(&self, observation: &AccountUsageObservation) -> Result<(), String> {
+        self.append(observation)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(Debug, Error)]
