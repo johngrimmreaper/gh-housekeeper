@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use gh_housekeeper_cli::{DaemonOutputFormat, DaemonPresentation, ForegroundDaemonOptions};
 #[cfg(not(unix))]
 use gh_housekeeper_cli::run_foreground_daemon;
 #[cfg(unix)]
 use gh_housekeeper_cli::run_foreground_daemon_with_local_ipc;
+use gh_housekeeper_cli::{DaemonOutputFormat, DaemonPresentation, ForegroundDaemonOptions};
 use gh_housekeeper_core::{ScanOptions, ScanScope, parse_duration};
 use gh_housekeeper_github::{GithubClient, SecretToken};
 use std::{sync::Arc, time::Duration};
@@ -105,19 +105,19 @@ async fn main() -> Result<()> {
     };
 
     let options = ForegroundDaemonOptions {
-            scan_options: ScanOptions {
-                scope,
-                exclude_repositories: cli.exclude_repositories,
-                concurrency: cli.concurrency.clamp(1, 16),
-            },
-            monitoring_interval_override,
-            max_attempts: (cli.iterations > 0).then_some(cli.iterations),
-            output: match cli.format {
-                OutputFormatArg::Table => DaemonOutputFormat::Table,
-                OutputFormatArg::Json => DaemonOutputFormat::Json,
-            },
-            presentation: DaemonPresentation::Protocol,
-        };
+        scan_options: ScanOptions {
+            scope,
+            exclude_repositories: cli.exclude_repositories,
+            concurrency: cli.concurrency.clamp(1, 16),
+        },
+        monitoring_interval_override,
+        max_attempts: (cli.iterations > 0).then_some(cli.iterations),
+        output: match cli.format {
+            OutputFormatArg::Table => DaemonOutputFormat::Table,
+            OutputFormatArg::Json => DaemonOutputFormat::Json,
+        },
+        presentation: DaemonPresentation::Protocol,
+    };
 
     #[cfg(unix)]
     {
