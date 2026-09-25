@@ -25,7 +25,9 @@ pub use account_usage_monitoring::{
 };
 pub use agent::{
     DAEMON_PROTOCOL_SCHEMA_VERSION, DaemonAccountUsageSummary, DaemonCapabilities, DaemonCommand,
-    DaemonEvent, DaemonRuntimeState, DaemonStatus,
+    DaemonControlError, DaemonControlErrorCode, DaemonEvent, DaemonEventSubscriptionRequest,
+    DaemonReply, DaemonRequest, DaemonResponse, DaemonResponseOutcome, DaemonRuntimeState,
+    DaemonStatus,
 };
 pub use allowance::{
     UsageAllowance, UsageAllowanceError, UsageAllowanceProvenance, UsagePercentageThresholds,
