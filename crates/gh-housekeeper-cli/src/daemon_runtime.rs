@@ -364,20 +364,20 @@ pub async fn run_foreground_daemon(
     if let Some(task) = account_usage_task
         && let Err(error) = task.await
     {
+        let event = DaemonEvent::Error {
+            occurred_at: Utc::now(),
+            message: format!("account usage polling task failed to join: {error}"),
+        };
+        control.publish(event.clone());
         match options.presentation {
             DaemonPresentation::MonitorWatch => {
                 with_output_lock(&output_lock, || {
                     eprintln!("account usage polling task failed to join: {error}");
                 });
             }
-            DaemonPresentation::Protocol => emit_daemon_event(
-                options.output,
-                &output_lock,
-                &DaemonEvent::Error {
-                    occurred_at: Utc::now(),
-                    message: format!("account usage polling task failed to join: {error}"),
-                },
-            ),
+            DaemonPresentation::Protocol => {
+                emit_daemon_event(options.output, &output_lock, &event);
+            }
         }
     }
 
@@ -455,22 +455,22 @@ async fn run_account_usage_polling_loop(
         let period = match billing_period_at(evaluated_at) {
             Ok(period) => period,
             Err(error) => {
+                let event = DaemonEvent::Error {
+                    occurred_at: Utc::now(),
+                    message: format!(
+                        "account usage polling could not determine billing period: {error:#}"
+                    ),
+                };
+                control.publish(event.clone());
                 match presentation {
                     DaemonPresentation::MonitorWatch => with_output_lock(&output_lock, || {
                         eprintln!(
                             "account usage polling could not determine billing period: {error:#}"
                         );
                     }),
-                    DaemonPresentation::Protocol => emit_daemon_event(
-                        output,
-                        &output_lock,
-                        &DaemonEvent::Error {
-                            occurred_at: Utc::now(),
-                            message: format!(
-                                "account usage polling could not determine billing period: {error:#}"
-                            ),
-                        },
-                    ),
+                    DaemonPresentation::Protocol => {
+                        emit_daemon_event(output, &output_lock, &event);
+                    }
                 }
                 return;
             }
