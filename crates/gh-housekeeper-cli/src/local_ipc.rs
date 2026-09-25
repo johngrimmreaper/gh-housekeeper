@@ -12,7 +12,10 @@ use gh_housekeeper_storage::StatePaths;
 use serde_json::Value;
 use std::{
     env, fs, io,
-    os::unix::fs::{FileTypeExt, PermissionsExt},
+    os::unix::{
+        fs::{FileTypeExt, PermissionsExt},
+        net::UnixStream as StdUnixStream,
+    },
     path::{Path, PathBuf},
     process,
     sync::{
@@ -379,12 +382,35 @@ fn prepare_socket_path(socket_path: &Path) -> Result<()> {
             );
         }
         Ok(metadata) if metadata.file_type().is_socket() => {
-            fs::remove_file(socket_path).with_context(|| {
-                format!(
-                    "failed to remove stale daemon control socket {}",
-                    socket_path.display()
-                )
-            })?;
+            match StdUnixStream::connect(socket_path) {
+                Ok(_) => {
+                    bail!(
+                        "daemon control socket is already accepting connections at {}; refusing to replace it",
+                        socket_path.display()
+                    );
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                    ) =>
+                {
+                    fs::remove_file(socket_path).with_context(|| {
+                        format!(
+                            "failed to remove stale daemon control socket {}",
+                            socket_path.display()
+                        )
+                    })?;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to verify whether daemon control socket is stale {}",
+                            socket_path.display()
+                        )
+                    });
+                }
+            }
         }
         Ok(_) => {
             bail!(
@@ -445,7 +471,7 @@ mod tests {
         monitoring_scheduler_cancellation,
     };
     use std::{
-        os::unix::fs::symlink,
+        os::unix::{fs::symlink, net::UnixListener as StdUnixStreamTestListener},
         sync::{Arc, Mutex},
         time::Duration,
     };
@@ -494,6 +520,10 @@ mod tests {
             run_local_daemon_server(server_path, server_control).await
         });
         wait_for_socket(&path).await;
+        let socket_mode = path.symlink_metadata().unwrap().permissions().mode() & 0o777;
+        let directory_mode = parent.symlink_metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(socket_mode, 0o600);
+        assert_eq!(directory_mode, 0o700);
 
         let status_request = DaemonRequest::new("status-test", DaemonCommand::Status);
         let status_response = exchange_request(&path, &status_request).await.unwrap();
@@ -575,6 +605,20 @@ mod tests {
                 if error.code == DaemonControlErrorCode::InvalidRequest
         ));
 
+        let mut incomplete = UnixStream::connect(&path).await.unwrap();
+        incomplete
+            .write_all(b"{\"schema_version\":2")
+            .await
+            .unwrap();
+        incomplete.shutdown().await.unwrap();
+        let frame = read_frame(&mut incomplete).await.unwrap();
+        let response: DaemonResponse = serde_json::from_slice(&frame).unwrap();
+        assert!(matches!(
+            response.outcome,
+            DaemonResponseOutcome::Error { error }
+                if error.code == DaemonControlErrorCode::InvalidRequest
+        ));
+
         let mut oversized = UnixStream::connect(&path).await.unwrap();
         oversized
             .write_all(&vec![b'x'; MAX_FRAME_BYTES + 1])
@@ -619,6 +663,22 @@ mod tests {
 
         control.shutdown();
         server.await.unwrap().unwrap();
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[tokio::test]
+    async fn live_socket_is_never_replaced_as_stale() {
+        let path = test_socket_path("live");
+        let parent = path.parent().unwrap().to_path_buf();
+        fs::create_dir_all(&parent).unwrap();
+        let listener = StdUnixStreamTestListener::bind(&path).unwrap();
+
+        let error = prepare_socket_path(&path).unwrap_err();
+        assert!(error.to_string().contains("already accepting connections"));
+        assert!(path.exists());
+
+        drop(listener);
+        let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(parent);
     }
 
