@@ -506,7 +506,10 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("daemon control server did not become ready at {}", path.display());
+        panic!(
+            "daemon control server did not become ready at {}",
+            path.display()
+        );
     }
 
     #[tokio::test]
