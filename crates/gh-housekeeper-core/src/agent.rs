@@ -209,6 +209,10 @@ impl DaemonControlError {
     pub fn unsupported(message: impl Into<String>) -> Self {
         Self::new(DaemonControlErrorCode::Unsupported, message)
     }
+
+    pub fn invalid_request(message: impl Into<String>) -> Self {
+        Self::new(DaemonControlErrorCode::InvalidRequest, message)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,9 +247,16 @@ impl DaemonResponse {
     }
 
     pub fn error(request: &DaemonRequest, error: DaemonControlError) -> Self {
+        Self::error_for_request_id(request.request_id.clone(), error)
+    }
+
+    pub fn error_for_request_id(
+        request_id: impl Into<String>,
+        error: DaemonControlError,
+    ) -> Self {
         Self {
             schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
-            request_id: request.request_id.clone(),
+            request_id: request_id.into(),
             outcome: DaemonResponseOutcome::Error { error },
         }
     }
