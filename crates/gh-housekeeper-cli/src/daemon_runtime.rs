@@ -781,6 +781,7 @@ fn notification_label(signal: MonitoringNotificationSignal) -> &'static str {
 
 fn pressure_label(level: StoragePressureLevel) -> &'static str {
     match level {
+        StoragePressureLevel::Unconfigured => "unconfigured",
         StoragePressureLevel::Healthy => "healthy",
         StoragePressureLevel::Warning => "warning",
         StoragePressureLevel::Critical => "critical",
