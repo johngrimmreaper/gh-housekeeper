@@ -76,7 +76,9 @@ pub enum AccountUsageUnknownReason {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccountUsageAvailability {
     Available,
-    Unsupported { reason: String },
+    Unsupported {
+        reason: String,
+    },
     Unknown {
         reason: AccountUsageUnknownReason,
         message: String,

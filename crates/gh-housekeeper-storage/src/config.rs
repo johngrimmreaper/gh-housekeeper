@@ -76,7 +76,6 @@ impl MonitoringConfig {
     }
 }
 
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AccountUsageMonitoringConfig {
@@ -265,8 +264,7 @@ impl ConfigStore {
             .ok_or(ConfigError::MissingSchemaVersion)?;
         let config = match schema_version {
             1 => {
-                let legacy: AppConfigV1 =
-                    toml::from_str(&input).map_err(ConfigError::Parse)?;
+                let legacy: AppConfigV1 = toml::from_str(&input).map_err(ConfigError::Parse)?;
                 AppConfig::from(legacy)
             }
             version if version == i64::from(CONFIG_SCHEMA_VERSION) => {
@@ -395,11 +393,15 @@ pub enum ConfigError {
     ZeroAccountUsageCheckInterval,
     #[error("account usage maximum sample age must be greater than zero minutes")]
     ZeroAccountUsageMaxAge,
-    #[error("account usage warning_percent and critical_percent must either both be set or both be absent")]
+    #[error(
+        "account usage warning_percent and critical_percent must either both be set or both be absent"
+    )]
     IncompleteAccountUsageThresholds,
     #[error("account usage billing_owner must not be empty")]
     EmptyBillingOwner,
-    #[error("duplicate account usage allowance for billing owner {owner:?} and resource {resource_id:?}")]
+    #[error(
+        "duplicate account usage allowance for billing owner {owner:?} and resource {resource_id:?}"
+    )]
     DuplicateAccountUsageAllowance { owner: String, resource_id: String },
     #[error("invalid account usage allowance: {0}")]
     InvalidAccountUsageAllowance(#[source] UsageAllowanceError),
@@ -468,7 +470,6 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-
     #[test]
     fn legacy_schema_v1_loads_with_safe_account_usage_defaults() {
         let dir = test_config_dir("legacy-v1");
@@ -488,12 +489,7 @@ mod tests {
             AccountUsageMonitoringConfig::default()
         );
         assert!(loaded.config.account_usage.allowances.is_empty());
-        assert!(loaded
-            .config
-            .account_usage
-            .thresholds()
-            .unwrap()
-            .is_none());
+        assert!(loaded.config.account_usage.thresholds().unwrap().is_none());
 
         fs::remove_dir_all(dir).unwrap();
     }

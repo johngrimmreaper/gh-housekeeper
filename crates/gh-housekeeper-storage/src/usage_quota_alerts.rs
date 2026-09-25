@@ -336,9 +336,7 @@ pub enum UsageQuotaAlertStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gh_housekeeper_core::{
-        BillingOwner, BillingOwnerKind, BillingPeriod, UsageQuotaThreshold,
-    };
+    use gh_housekeeper_core::{BillingOwner, BillingOwnerKind, BillingPeriod, UsageQuotaThreshold};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -466,9 +464,7 @@ mod tests {
         assert_eq!(lookup.issues.len(), 1);
         assert!(matches!(
             store.record_delivery_if_new(&key),
-            Err(UsageQuotaAlertStoreError::IndeterminateHistory {
-                issue_count: 1
-            })
+            Err(UsageQuotaAlertStoreError::IndeterminateHistory { issue_count: 1 })
         ));
 
         fs::remove_dir_all(state_dir).unwrap();
