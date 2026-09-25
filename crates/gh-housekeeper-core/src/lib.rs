@@ -20,8 +20,8 @@ pub use account_usage::{
 pub use account_usage_monitoring::{
     AccountUsageObservationSink, AccountUsageOwnerPoll, AccountUsagePollingCycle,
     AccountUsagePollingService, UsageQuotaAlertReceiptLookup, UsageQuotaAlertReceiptState,
-    UsageQuotaAlertReceiptStore, UsageQuotaNotificationCandidate,
-    UsageQuotaNotificationDelivery, UsageQuotaNotificationOutcome,
+    UsageQuotaAlertReceiptStore, UsageQuotaNotificationCandidate, UsageQuotaNotificationDelivery,
+    UsageQuotaNotificationOutcome,
 };
 pub use agent::{
     DAEMON_PROTOCOL_SCHEMA_VERSION, DaemonCapabilities, DaemonCommand, DaemonEvent,
