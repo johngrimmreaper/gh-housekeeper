@@ -3,9 +3,9 @@ use chrono::{DateTime, Utc};
 use gh_housekeeper_core::{
     Account, AccountUsageItem, AccountUsageObservation, AccountUsageProvider, AccountUsageSource,
     AccountUsageUnknownReason, ActionsCache, Artifact, ArtifactProvider, BillingOwner,
-    BillingOwnerKind, BillingPeriod, CacheProvider, CachePurgeProvider, DeleteOutcome, ProviderError,
-    ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope, Visibility,
-    WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
+    BillingOwnerKind, BillingPeriod, CacheProvider, CachePurgeProvider, DeleteOutcome,
+    ProviderError, ProviderResult, ProviderTelemetry, Repository, RepositoryRef, ScanScope,
+    Visibility, WorkflowRun, WorkflowRunProvider, WorkflowRunPurgeProvider, WorkflowRunRef,
 };
 use reqwest::{Method, Response, StatusCode, header::HeaderMap};
 use serde::Deserialize;
@@ -377,7 +377,6 @@ impl ArtifactProvider for GithubClient {
     }
 }
 
-
 #[async_trait]
 impl AccountUsageProvider for GithubClient {
     async fn billing_usage_summary(
@@ -400,10 +399,7 @@ impl AccountUsageProvider for GithubClient {
             }
         };
         let source = github_billing_usage_source(&endpoint);
-        let path = format!(
-            "{endpoint}?year={}&month={}",
-            period.year, period.month
-        );
+        let path = format!("{endpoint}?year={}&month={}", period.year, period.month);
 
         match self.get_json::<GithubBillingUsageSummary>(&path).await {
             Ok(summary) => match summary.into_domain(owner, period) {
@@ -659,7 +655,6 @@ impl WorkflowRunPurgeProvider for GithubClient {
     }
 }
 
-
 fn billing_usage_summary_endpoint(owner: &BillingOwner) -> ProviderResult<String> {
     if !owner.provider.eq_ignore_ascii_case("github") {
         return Err(ProviderError::InvalidResponse(format!(
@@ -763,7 +758,6 @@ fn github_error_message(body: &str) -> String {
 
     body.chars().take(512).collect()
 }
-
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1077,7 +1071,6 @@ mod tests {
         (format!("http://{address}"), receiver, handle)
     }
 
-
     fn spawn_http_response_fixture(
         status_line: &str,
         body: String,
@@ -1341,7 +1334,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn reads_personal_billing_usage_summary_without_collapsing_skus() {
         let body = r#"{"timePeriod":{"year":2026,"month":9},"user":"example-user","usageItems":[{"product":"Actions","sku":"actions_linux","unitType":"minutes","pricePerUnit":0.006,"grossQuantity":120,"grossAmount":0.72,"discountQuantity":120,"discountAmount":0.72,"netQuantity":0,"netAmount":0},{"product":"Actions","sku":"actions_storage","unitType":"gb_hours","pricePerUnit":0.000008,"grossQuantity":25,"grossAmount":0.0002,"discountQuantity":25,"discountAmount":0.0002,"netQuantity":0,"netAmount":0}]}"#.to_owned();
@@ -1356,7 +1348,8 @@ mod tests {
         };
         let period = BillingPeriod::monthly(2026, 9).unwrap();
 
-        let observation = AccountUsageProvider::billing_usage_summary(&client, &owner, period).await;
+        let observation =
+            AccountUsageProvider::billing_usage_summary(&client, &owner, period).await;
         server.join().unwrap();
 
         assert!(observation.is_available());
@@ -1371,7 +1364,9 @@ mod tests {
 
         assert_eq!(
             requests.try_iter().collect::<Vec<_>>(),
-            vec!["GET /users/example-user/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"]
+            vec![
+                "GET /users/example-user/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"
+            ]
         );
     }
 
@@ -1400,15 +1395,16 @@ mod tests {
         assert!(observation.items.is_empty());
         assert_eq!(
             requests.try_iter().collect::<Vec<_>>(),
-            vec!["GET /organizations/example-org/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"]
+            vec![
+                "GET /organizations/example-org/settings/billing/usage/summary?year=2026&month=9 HTTP/1.1"
+            ]
         );
     }
 
     #[tokio::test]
     async fn forbidden_billing_usage_is_unknown_not_zero() {
         let body = r#"{"message":"Resource not accessible by integration"}"#.to_owned();
-        let (base_url, requests, server) =
-            spawn_http_response_fixture("403 Forbidden", body);
+        let (base_url, requests, server) = spawn_http_response_fixture("403 Forbidden", body);
         let client =
             GithubClient::with_base_url(SecretToken("fictional-token".to_owned()), base_url)
                 .unwrap();

@@ -22,10 +22,9 @@ use gh_housekeeper_github::{GithubClient, SecretToken};
 use gh_housekeeper_policy::{Decision, PolicyConfig, PolicyEngine};
 use gh_housekeeper_storage::{
     AccountUsageHistoryStore, AccountUsageReadIssue, AppConfig, AuditReadIssue, AuditRecord,
-    AuditStore, CachePurgeAuditReadIssue,
-    CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore, MonitoringConfig,
-    MonitoringHistoryStore, MonitoringReadIssue, RunProtectionStore, RunPurgeAuditReadIssue,
-    RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
+    AuditStore, CachePurgeAuditReadIssue, CachePurgeAuditRecord, CachePurgeAuditStore, ConfigStore,
+    MonitoringConfig, MonitoringHistoryStore, MonitoringReadIssue, RunProtectionStore,
+    RunPurgeAuditReadIssue, RunPurgeAuditRecord, RunPurgeAuditStore, StatePaths,
 };
 use serde_json::json;
 use std::{
@@ -770,7 +769,6 @@ enum MonitorAction {
     History(MonitorHistoryCommand),
 }
 
-
 #[derive(Args)]
 struct MonitorAccountCommand {
     #[command(subcommand)]
@@ -1388,7 +1386,6 @@ fn notification_label(signal: MonitoringNotificationSignal) -> &'static str {
     }
 }
 
-
 async fn run_monitor_account_once(
     provider: Arc<dyn AccountUsageProvider>,
     command: MonitorAccountOnceCommand,
@@ -1529,7 +1526,10 @@ fn run_monitor_account_history(command: MonitorAccountHistoryCommand) -> Result<
                 billing_owner_kind_label(owner.kind),
                 owner.login
             );
-            println!("Billing period:        {:04}-{:02}", period.year, period.month);
+            println!(
+                "Billing period:        {:04}-{:02}",
+                period.year, period.month
+            );
 
             if samples.is_empty() {
                 println!("No account usage samples found for this owner and billing period.");
@@ -1629,7 +1629,6 @@ fn print_account_usage_observation_table(
     }
 }
 
-
 fn same_billing_owner(left: &BillingOwner, right: &BillingOwner) -> bool {
     left.kind == right.kind
         && left.provider.eq_ignore_ascii_case(&right.provider)
@@ -1679,19 +1678,15 @@ fn print_account_usage_quota_evaluations(
         "RESOURCE", "STATE", "USED", "ALLOWANCE", "PERCENT", "REMAINING", "BASIS", "PROVENANCE"
     );
     for evaluation in evaluations {
-        let resource_id = evaluation.resource_id.as_deref().unwrap_or("<unconfigured>");
+        let resource_id = evaluation
+            .resource_id
+            .as_deref()
+            .unwrap_or("<unconfigured>");
         match &evaluation.status {
             UsageQuotaStatus::Unconfigured => {
                 println!(
                     "{:<28} {:<10} {:>11} {:>11} {:>9} {:>11} {:<9} {:<16}",
-                    resource_id,
-                    "unconfigured",
-                    "-",
-                    "-",
-                    "-",
-                    "-",
-                    "-",
-                    "-"
+                    resource_id, "unconfigured", "-", "-", "-", "-", "-", "-"
                 );
             }
             UsageQuotaStatus::Unknown { reason, .. } => {
@@ -4960,7 +4955,6 @@ mod tests {
         ));
     }
 
-
     #[test]
     fn account_usage_monitor_commands_require_explicit_billing_series() {
         let once = Cli::try_parse_from([
@@ -5035,7 +5029,6 @@ mod tests {
             .is_err()
         );
     }
-
 
     #[test]
     fn billing_owner_matching_is_case_insensitive_but_kind_sensitive() {

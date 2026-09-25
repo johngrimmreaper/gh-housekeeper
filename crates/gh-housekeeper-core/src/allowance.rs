@@ -1,5 +1,6 @@
 use crate::{
-    AccountUsageAvailability, AccountUsageItem, AccountUsageObservation, BillingOwner, BillingPeriod,
+    AccountUsageAvailability, AccountUsageItem, AccountUsageObservation, BillingOwner,
+    BillingPeriod,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -60,9 +61,7 @@ impl UsageAllowance {
         }
 
         match &self.provenance {
-            UsageAllowanceProvenance::ProviderReported { source }
-                if source.trim().is_empty() =>
-            {
+            UsageAllowanceProvenance::ProviderReported { source } if source.trim().is_empty() => {
                 Err(UsageAllowanceError::EmptyField("provenance.source"))
             }
             UsageAllowanceProvenance::UserConfigured { label } if label.trim().is_empty() => {
@@ -288,7 +287,10 @@ pub fn evaluate_usage_quota(
     let percent_used = usage_quantity / allowance.quantity * 100.0;
     let remaining_quantity = (allowance.quantity - usage_quantity).max(0.0);
     let (level, threshold) = if percent_used >= thresholds.critical_percent {
-        (UsageQuotaLevel::Critical, Some(UsageQuotaThreshold::Critical))
+        (
+            UsageQuotaLevel::Critical,
+            Some(UsageQuotaThreshold::Critical),
+        )
     } else if percent_used >= thresholds.warning_percent {
         (UsageQuotaLevel::Warning, Some(UsageQuotaThreshold::Warning))
     } else {
@@ -349,9 +351,7 @@ pub enum UsageAllowanceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        AccountUsageSource, AccountUsageUnknownReason, BillingOwnerKind,
-    };
+    use crate::{AccountUsageSource, AccountUsageUnknownReason, BillingOwnerKind};
     use chrono::TimeZone;
 
     fn observed(month: u8, items: Vec<AccountUsageItem>) -> AccountUsageObservation {
