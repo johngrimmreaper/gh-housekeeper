@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   rust:
@@ -23,6 +23,18 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+
+      - name: Apply rustfmt for branch consolidation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/work/account-usage-monitoring-20260924'
+        run: |
+          cargo fmt --all
+          if ! git diff --quiet; then
+            git config user.name "Reaper"
+            git config user.email "johngrimmreaper@disroot.org"
+            git add -- '*.rs'
+            git commit -m "Apply rustfmt to account usage monitoring"
+            git push origin HEAD:work/account-usage-monitoring-20260924
+          fi
 
       - name: Formatting
         run: cargo fmt --all --check
