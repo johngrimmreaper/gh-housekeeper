@@ -1026,8 +1026,6 @@ fn run_config(command: ConfigCommand) -> Result<()> {
 
 async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand) -> Result<()> {
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
-    let _instance_lock = DaemonInstanceLock::acquire(&paths)
-        .context("failed to acquire the single foreground-daemon instance lock")?;
     let loaded = ConfigStore::from_paths(&paths)
         .load()
         .context("failed to load monitoring configuration")?;
@@ -1036,21 +1034,6 @@ async fn run_status(provider: Arc<dyn ArtifactProvider>, command: StatusCommand)
         .monitoring
         .thresholds()
         .context("invalid monitoring thresholds")?;
-    let account_usage_config = loaded.config.account_usage.clone();
-    let account_usage_thresholds = account_usage_config
-        .thresholds()
-        .context("invalid account usage thresholds")?;
-    let account_usage_allowances = account_usage_config
-        .domain_allowances()
-        .context("invalid configured account usage allowance")?;
-    let account_usage_interval_seconds = account_usage_config
-        .check_interval_minutes
-        .checked_mul(60)
-        .context("configured account usage interval is too large")?;
-    let account_usage_max_age_seconds = account_usage_config
-        .max_age_minutes
-        .checked_mul(60)
-        .context("configured account usage maximum age is too large")?;
 
     let report = MonitoringService::new(provider)
         .check(command.scope.scan_options(), thresholds)
@@ -1165,6 +1148,8 @@ async fn run_monitor_watch(
     command: MonitorWatchCommand,
 ) -> Result<()> {
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
+    let _instance_lock = DaemonInstanceLock::acquire(&paths)
+        .context("failed to acquire the single foreground-daemon instance lock")?;
     let loaded = ConfigStore::from_paths(&paths)
         .load()
         .context("failed to load monitoring configuration")?;
@@ -1173,6 +1158,21 @@ async fn run_monitor_watch(
         .monitoring
         .thresholds()
         .context("invalid monitoring thresholds")?;
+    let account_usage_config = loaded.config.account_usage.clone();
+    let account_usage_thresholds = account_usage_config
+        .thresholds()
+        .context("invalid account usage thresholds")?;
+    let account_usage_allowances = account_usage_config
+        .domain_allowances()
+        .context("invalid configured account usage allowance")?;
+    let account_usage_interval_seconds = account_usage_config
+        .check_interval_minutes
+        .checked_mul(60)
+        .context("configured account usage interval is too large")?;
+    let account_usage_max_age_seconds = account_usage_config
+        .max_age_minutes
+        .checked_mul(60)
+        .context("configured account usage maximum age is too large")?;
 
     let interval = match command.interval.as_deref() {
         Some(value) => parse_duration(value)
