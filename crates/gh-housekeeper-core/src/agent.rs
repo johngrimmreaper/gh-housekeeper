@@ -146,6 +146,135 @@ pub enum DaemonCommand {
     Shutdown,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub command: DaemonCommand,
+}
+
+impl DaemonRequest {
+    pub fn new(request_id: impl Into<String>, command: DaemonCommand) -> Self {
+        Self {
+            schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
+            request_id: request_id.into(),
+            command,
+        }
+    }
+
+    pub fn validate_schema(&self) -> Result<(), DaemonControlError> {
+        if self.schema_version == DAEMON_PROTOCOL_SCHEMA_VERSION {
+            Ok(())
+        } else {
+            Err(DaemonControlError::schema_mismatch(self.schema_version))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonControlErrorCode {
+    InvalidRequest,
+    SchemaMismatch,
+    Unsupported,
+    Unavailable,
+    Internal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonControlError {
+    pub code: DaemonControlErrorCode,
+    pub message: String,
+}
+
+impl DaemonControlError {
+    pub fn new(code: DaemonControlErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn schema_mismatch(received: u32) -> Self {
+        Self::new(
+            DaemonControlErrorCode::SchemaMismatch,
+            format!(
+                "daemon protocol schema mismatch: received {received}, expected {DAEMON_PROTOCOL_SCHEMA_VERSION}"
+            ),
+        )
+    }
+
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new(DaemonControlErrorCode::Unsupported, message)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "snake_case")]
+pub enum DaemonReply {
+    Status { status: DaemonStatus },
+    ShutdownAccepted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum DaemonResponseOutcome {
+    Ok { reply: DaemonReply },
+    Error { error: DaemonControlError },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonResponse {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub outcome: DaemonResponseOutcome,
+}
+
+impl DaemonResponse {
+    pub fn ok(request: &DaemonRequest, reply: DaemonReply) -> Self {
+        Self {
+            schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
+            request_id: request.request_id.clone(),
+            outcome: DaemonResponseOutcome::Ok { reply },
+        }
+    }
+
+    pub fn error(request: &DaemonRequest, error: DaemonControlError) -> Self {
+        Self {
+            schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
+            request_id: request.request_id.clone(),
+            outcome: DaemonResponseOutcome::Error { error },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonEventSubscriptionRequest {
+    pub schema_version: u32,
+    pub subscription_id: String,
+}
+
+impl DaemonEventSubscriptionRequest {
+    pub fn new(subscription_id: impl Into<String>) -> Self {
+        Self {
+            schema_version: DAEMON_PROTOCOL_SCHEMA_VERSION,
+            subscription_id: subscription_id.into(),
+        }
+    }
+
+    pub fn validate_schema(&self) -> Result<(), DaemonControlError> {
+        if self.schema_version == DAEMON_PROTOCOL_SCHEMA_VERSION {
+            Ok(())
+        } else {
+            Err(DaemonControlError::schema_mismatch(self.schema_version))
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum DaemonEvent {
@@ -211,6 +340,45 @@ mod tests {
         assert!(status.capabilities.account_usage_monitoring);
         assert!(!status.automatic_cleanup_enabled);
         assert!(!status.capabilities.destructive_cleanup);
+    }
+
+    #[test]
+    fn request_and_response_round_trip_through_json() {
+        let request = DaemonRequest::new("request-1", DaemonCommand::Status);
+        let request_json = serde_json::to_string(&request).unwrap();
+        let decoded_request: DaemonRequest = serde_json::from_str(&request_json).unwrap();
+        assert_eq!(decoded_request, request);
+
+        let response = DaemonResponse::ok(
+            &request,
+            DaemonReply::Status {
+                status: DaemonStatus::starting(Utc::now()),
+            },
+        );
+        let response_json = serde_json::to_string(&response).unwrap();
+        let decoded_response: DaemonResponse = serde_json::from_str(&response_json).unwrap();
+        assert_eq!(decoded_response, response);
+    }
+
+    #[test]
+    fn schema_mismatch_is_structured() {
+        let mut request = DaemonRequest::new("request-2", DaemonCommand::Status);
+        request.schema_version = DAEMON_PROTOCOL_SCHEMA_VERSION + 1;
+
+        let error = request.validate_schema().unwrap_err();
+        assert_eq!(error.code, DaemonControlErrorCode::SchemaMismatch);
+        assert!(error.message.contains("received"));
+        assert!(error.message.contains("expected"));
+    }
+
+    #[test]
+    fn event_subscription_request_is_versioned() {
+        let subscription = DaemonEventSubscriptionRequest::new("subscription-1");
+        assert_eq!(
+            subscription.schema_version,
+            DAEMON_PROTOCOL_SCHEMA_VERSION
+        );
+        assert!(subscription.validate_schema().is_ok());
     }
 
     #[test]
