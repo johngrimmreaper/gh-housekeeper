@@ -446,6 +446,29 @@ impl MonitoringSchedulerCancellation {
     pub fn cancel(&self) {
         let _ = self.sender.send(true);
     }
+
+    pub fn subscribe(&self) -> MonitoringSchedulerShutdown {
+        MonitoringSchedulerShutdown {
+            receiver: self.sender.subscribe(),
+        }
+    }
+}
+
+impl MonitoringSchedulerShutdown {
+    pub fn is_cancelled(&self) -> bool {
+        *self.receiver.borrow()
+    }
+
+    pub async fn cancelled(&mut self) {
+        loop {
+            if *self.receiver.borrow() {
+                return;
+            }
+            if self.receiver.changed().await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 pub struct MonitoringScheduler<S> {
