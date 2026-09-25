@@ -63,7 +63,7 @@ pub enum DaemonEventSubscriptionError {
 }
 
 impl DaemonControlHandle {
-    fn new(
+    pub(crate) fn new(
         status: Arc<Mutex<DaemonStatus>>,
         cancellation: MonitoringSchedulerCancellation,
     ) -> Self {
