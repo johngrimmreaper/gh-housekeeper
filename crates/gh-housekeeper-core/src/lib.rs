@@ -1,4 +1,5 @@
 mod account_usage;
+mod account_usage_monitoring;
 mod agent;
 mod allowance;
 mod cache;
@@ -15,6 +16,12 @@ pub use account_usage::{
     AccountUsageAvailability, AccountUsageItem, AccountUsageObservation, AccountUsageProvider,
     AccountUsageSource, AccountUsageUnknownReason, BillingOwner, BillingOwnerKind, BillingPeriod,
     BillingPeriodError,
+};
+pub use account_usage_monitoring::{
+    AccountUsageObservationSink, AccountUsageOwnerPoll, AccountUsagePollingCycle,
+    AccountUsagePollingService, UsageQuotaAlertReceiptLookup, UsageQuotaAlertReceiptState,
+    UsageQuotaAlertReceiptStore, UsageQuotaNotificationCandidate,
+    UsageQuotaNotificationDelivery, UsageQuotaNotificationOutcome,
 };
 pub use agent::{
     DAEMON_PROTOCOL_SCHEMA_VERSION, DaemonCapabilities, DaemonCommand, DaemonEvent,
