@@ -155,6 +155,17 @@ pub async fn run_foreground_daemon(
     provider: Arc<GithubClient>,
     options: ForegroundDaemonOptions,
 ) -> Result<()> {
+    run_foreground_daemon_with_control(provider, options, |_| {}).await
+}
+
+pub async fn run_foreground_daemon_with_control<F>(
+    provider: Arc<GithubClient>,
+    options: ForegroundDaemonOptions,
+    control_ready: F,
+) -> Result<()>
+where
+    F: FnOnce(DaemonControlHandle),
+{
     let paths = StatePaths::discover().context("failed to determine local gh-housekeeper paths")?;
     let _instance_lock = DaemonInstanceLock::acquire(&paths)
         .context("failed to acquire the single foreground-daemon instance lock")?;
@@ -249,6 +260,7 @@ pub async fn run_foreground_daemon(
             event_stream: matches!(options.presentation, DaemonPresentation::Protocol),
         };
     }
+    control_ready(control.clone());
 
     let output_lock = Arc::new(Mutex::new(()));
     let running_event = DaemonEvent::StatusChanged {
