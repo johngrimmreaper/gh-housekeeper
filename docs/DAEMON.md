@@ -16,13 +16,13 @@ The existing `gh-housekeeper` CLI remains fully usable without the daemon. The f
 
 ## Lifecycle model
 
-The first daemon milestone should support foreground execution:
+The first daemon milestone now supports foreground execution:
 
 ```text
 gh-housekeeperd --foreground
 ```
 
-This is deliberately simple enough to run manually in a terminal and validate before service integration.
+This is deliberately simple enough to run manually in a terminal and validate before service integration. The current binary refuses to run without `--foreground`; it does not daemonize itself or install a service.
 
 Later, the same binary can be hosted by:
 
@@ -289,22 +289,34 @@ Workflow-run `keep_latest` still groups by repository, workflow ID, and branch b
 - README/policy/architecture correction;
 - provider-neutral daemon protocol/lifecycle types.
 
-### Stage 2 — foreground runtime foundation partially implemented
+### Stage 2 — foreground headless daemon implemented
 
-Implemented in the current `monitor watch` launch path:
+The foreground runtime is now shared source code consumed by both:
 
-- foreground execution using the existing monitoring scheduler;
+- `gh-housekeeper monitor watch`;
+- `gh-housekeeperd --foreground`.
+
+Implemented:
+
+- foreground execution using the existing `MonitoringScheduler`;
 - durable monitoring samples;
+- the existing `AccountUsagePollingService` when allowances are configured;
 - shared graceful cancellation for artifact monitoring and account-usage polling;
-- stable process ownership / single-instance locking;
-- structured table/JSON monitoring events plus foreground quota-notification diagnostics;
+- the existing stable `DaemonInstanceLock`, so `monitor watch` and `gh-housekeeperd` cannot run concurrently as cooperating instances;
+- the existing account-usage history and quota-delivery receipt stores;
+- daemon protocol v2 status updates from real scheduler/account-polling cycles;
+- structured `DaemonEvent` output from the daemon presentation, including `StatusChanged`, `MonitoringSignal`, `AccountUsageCycle`, and `Error`;
+- table or JSON-lines foreground presentation;
 - no automatic deletion.
 
-Still required for the dedicated headless daemon milestone:
+The runtime lives once in the CLI package library and is called by both binaries. `main.rs` no longer constructs its own monitoring scheduler, account-usage polling service, or daemon lock.
 
-- add the `gh-housekeeperd` binary around these shared services;
-- expose the serializable daemon status model from a real daemon process;
-- preserve the same process lock, shutdown, polling, and notification-delivery contracts.
+Still future:
+
+- durable/queryable IPC transport for status and commands;
+- service-manager/autostart integration;
+- desktop notification/tray adapters;
+- automated cleanup, which remains disabled.
 
 ### Stage 3 — local IPC
 

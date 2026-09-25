@@ -46,7 +46,7 @@ Workflow-run retention is policy-driven as well as explicitly selectable. `class
 
 An exact local protection prevents this version of gh-housekeeper from purging a run, even if an older immutable plan contains it. Initialize the separate local protection store before run classification or purge. Protection does not change GitHub's own run retention: an expired run may disappear normally and leave a locally recorded stale protection.
 
-Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration, read-only storage-pressure status, durable monitoring history, and the explicit foreground `monitor watch` scheduler are also implemented as the foundation for a future headless daemon/system-tray agent. No live destructive validation has been performed against valuable project artifacts.
+Remote revalidation of exact cleanup-plan targets is implemented. A safe executor exists in the shared core with an explicit authorization type, reviewed-plan validation, just-in-time target revalidation, and structured execution outcomes. Durable versioned execution-audit persistence is implemented in the storage crate using crash-resistant per-execution records. The guarded `apply` CLI wires these layers together with an explicit interactive confirmation boundary or deliberate `--yes` automation authorization. A read-only `history` command exposes local audit records without requiring GitHub authentication or network access. Persistent versioned monitoring configuration, read-only storage-pressure status, durable monitoring history, the explicit foreground `monitor watch` scheduler, and the dedicated foreground `gh-housekeeperd` binary are implemented. `monitor watch` and `gh-housekeeperd` now delegate to the same shared runtime; tray/service-manager integration remains future work. No live destructive validation has been performed against valuable project artifacts.
 
 ## CLI
 
@@ -222,6 +222,16 @@ gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --
 # Streaming JSON lines: artifact scheduler events, account_usage_cycle events when
 # configured, plus the final artifact-monitoring summary.
 gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --interval 1s --format json
+
+# Dedicated headless daemon milestone. Foreground execution is intentionally required for now.
+# It uses the same scheduler, account-usage poller, cancellation source, singleton lock,
+# durable histories, and notification receipt store as monitor watch.
+gh-housekeeperd --foreground
+gh-housekeeperd --foreground --repo example-user/project-alpha
+gh-housekeeperd --foreground --repo example-user/project-alpha --format json
+
+# A bounded daemon run is useful for validation without installing a service.
+gh-housekeeperd --foreground --repo example-user/project-alpha --iterations 2 --interval 1s
 
 # Read durable monitoring samples locally; no GitHub authentication/network required.
 gh-housekeeper monitor history
