@@ -208,12 +208,19 @@ gh-housekeeper monitor once --repo example-user/project-alpha
 gh-housekeeper monitor once --repo example-user/project-alpha --format json
 
 # Foreground scheduler. Uses configured interval (30m by default) until Ctrl-C.
+# When account_usage allowances are configured, the same long-running process also
+# polls those billing owners at account_usage.check_interval_minutes, persists each
+# observation, evaluates exact configured quotas, and emits deduplicated foreground
+# warning/critical notices. It never turns quota pressure into cleanup.
 gh-housekeeper monitor watch --repo example-user/project-alpha
 
-# Bounded fast foreground validation: exactly two attempts, one-second fixed delay.
+# Bounded fast foreground validation: exactly two artifact-monitoring attempts,
+# one-second fixed delay. Account-usage polling keeps its independent configured cadence
+# and stops with the same foreground runtime.
 gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --interval 1s
 
-# Streaming JSON lines: one object per iteration/failure plus a final summary.
+# Streaming JSON lines: artifact scheduler events, account_usage_cycle events when
+# configured, plus the final artifact-monitoring summary.
 gh-housekeeper monitor watch --repo example-user/project-alpha --iterations 2 --interval 1s --format json
 
 # Read durable monitoring samples locally; no GitHub authentication/network required.
