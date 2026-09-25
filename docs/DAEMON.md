@@ -212,6 +212,22 @@ Explicit `monitor account once` and `monitor account history` semantics are unch
 
 There is still no dedicated `gh-housekeeperd` binary, desktop notification adapter, `systemd --user` installation, D-Bus transport, tray, or GUI wiring. Those future launch paths must reuse the shared polling service, shutdown lifecycle, receipt rules, and single-instance policy rather than create a parallel daemon or scheduler.
 
+## Daemon protocol v2 account-usage status checkpoint
+
+The provider-neutral daemon protocol is now schema version 2. This is an additive status/event checkpoint for the future dedicated `gh-housekeeperd` process; it does **not** mean that the standalone daemon binary or IPC transport exists yet.
+
+Version 2 adds:
+
+- an `account_usage_monitoring` capability bit;
+- `last_account_usage_at` and `next_account_usage_at` status timestamps;
+- a compact `DaemonAccountUsageSummary` with owner availability, persistence, evaluation, and notification-delivery counts;
+- `DaemonStatus::record_account_usage_cycle`, which derives that summary from the existing `AccountUsagePollingCycle`;
+- a structured `DaemonEvent::AccountUsageCycle` carrying the same polling-cycle type already produced by `AccountUsagePollingService`.
+
+The summary deliberately reports unavailable owners and failed/fail-closed delivery outcomes rather than hiding them. It does not grant cleanup authority, and protocol v2 still exposes no destructive daemon command. Automatic cleanup remains disabled in the safe starting status.
+
+The full cycle is carried as an event while the long-lived status keeps a compact summary. This avoids inventing a second account-usage model for daemon clients and lets future CLI, GUI, D-Bus, or local-socket adapters consume the same application-layer result.
+
 ## Daemon status model
 
 A client should eventually be able to inspect at least:
