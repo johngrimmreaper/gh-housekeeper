@@ -96,18 +96,15 @@ pub async fn send_local_daemon_request(command: DaemonCommand) -> Result<DaemonR
     exchange_request(&socket_path, &request).await
 }
 
-async fn run_local_daemon_server(
-    socket_path: PathBuf,
-    control: DaemonControlHandle,
-) -> Result<()> {
+async fn run_local_daemon_server(socket_path: PathBuf, control: DaemonControlHandle) -> Result<()> {
     if control.status().state == DaemonRuntimeState::Stopping {
         return Ok(());
     }
 
     let subscription_request = DaemonEventSubscriptionRequest::new("local-ipc-server");
-    let mut events = control
-        .subscribe(&subscription_request)
-        .map_err(|error| anyhow!("failed to subscribe local IPC server to daemon events: {error:?}"))?;
+    let mut events = control.subscribe(&subscription_request).map_err(|error| {
+        anyhow!("failed to subscribe local IPC server to daemon events: {error:?}")
+    })?;
 
     prepare_socket_path(&socket_path)?;
     let listener = UnixListener::bind(&socket_path).with_context(|| {
@@ -281,7 +278,9 @@ async fn read_frame(stream: &mut UnixStream) -> std::result::Result<Vec<u8>, Str
                 .iter()
                 .any(|byte| !byte.is_ascii_whitespace())
             {
-                return Err("multiple local control frames on one connection are not supported".to_owned());
+                return Err(
+                    "multiple local control frames on one connection are not supported".to_owned(),
+                );
             }
             if frame.is_empty() {
                 return Err("empty local control frame".to_owned());
@@ -516,9 +515,8 @@ mod tests {
         let (control, shutdown) = control_fixture();
         let server_control = control.clone();
         let server_path = path.clone();
-        let server = tokio::spawn(async move {
-            run_local_daemon_server(server_path, server_control).await
-        });
+        let server =
+            tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
         wait_for_socket(&path).await;
         let socket_mode = path.symlink_metadata().unwrap().permissions().mode() & 0o777;
         let directory_mode = parent.symlink_metadata().unwrap().permissions().mode() & 0o777;
@@ -560,9 +558,8 @@ mod tests {
         let (control, _) = control_fixture();
         let server_control = control.clone();
         let server_path = path.clone();
-        let server = tokio::spawn(async move {
-            run_local_daemon_server(server_path, server_control).await
-        });
+        let server =
+            tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
         wait_for_socket(&path).await;
 
         let response = exchange_request(
@@ -590,9 +587,8 @@ mod tests {
         let (control, _) = control_fixture();
         let server_control = control.clone();
         let server_path = path.clone();
-        let server = tokio::spawn(async move {
-            run_local_daemon_server(server_path, server_control).await
-        });
+        let server =
+            tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
         wait_for_socket(&path).await;
 
         let mut malformed = UnixStream::connect(&path).await.unwrap();
@@ -645,9 +641,8 @@ mod tests {
         let (control, shutdown) = control_fixture();
         let server_control = control.clone();
         let server_path = path.clone();
-        let server = tokio::spawn(async move {
-            run_local_daemon_server(server_path, server_control).await
-        });
+        let server =
+            tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
         wait_for_socket(&path).await;
 
         let response = exchange_request(
@@ -676,9 +671,8 @@ mod tests {
         let (control, shutdown) = control_fixture();
         let server_control = control.clone();
         let server_path = path.clone();
-        let server = tokio::spawn(async move {
-            run_local_daemon_server(server_path, server_control).await
-        });
+        let server =
+            tokio::spawn(async move { run_local_daemon_server(server_path, server_control).await });
         wait_for_socket(&path).await;
 
         let mut request = DaemonRequest::new("schema-test", DaemonCommand::Shutdown);
